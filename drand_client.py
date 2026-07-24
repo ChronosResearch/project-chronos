@@ -247,6 +247,21 @@ class DrandClient(IOracleClient):
         Raises:
             CryptographicSanityError: If BLS signature verification fails.
         """
+        if (
+            not isinstance(target_round, int)
+            or isinstance(target_round, bool)
+            or target_round <= 0
+        ):
+            raise ValueError(f"target_round must be a positive integer (got {target_round!r}).")
+        if (
+            not isinstance(polling_interval, int)
+            or isinstance(polling_interval, bool)
+            or polling_interval <= 0
+        ):
+            raise ValueError(
+                f"polling_interval must be a positive integer (got {polling_interval!r})."
+            )
+
         _log.info(f"Dead Man's Switch armed.  Waiting for drand round {target_round}...")
         backoff: int = polling_interval
 

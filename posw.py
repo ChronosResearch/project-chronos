@@ -296,9 +296,23 @@ class PoSWManager:
     _proof: Optional[PoSWProof] = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.target_duration_seconds, int)
+            or isinstance(self.target_duration_seconds, bool)
+            or self.target_duration_seconds <= 0
+        ):
+            raise ValueError(
+                "target_duration_seconds must be a positive integer "
+                f"(got {self.target_duration_seconds!r})."
+            )
         self._log = get_chronos_logger("PoSW")
         self._seed: bytes = secrets.token_bytes(32)
         self._hashes_per_second: int = self._calibrate()
+        if self._hashes_per_second <= 0:
+            raise RuntimeError(
+                "PoSW calibration produced a non-positive hash rate. "
+                "Unable to enforce sequential-work timing invariant."
+            )
         self.t: int = max(1, self._hashes_per_second * self.target_duration_seconds)
         self._log.info(
             f"PoSW initialised: T={self.t:,} hashes "

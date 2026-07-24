@@ -77,6 +77,35 @@ class TestChronosAgentDeadline(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(agent.target_round, 1001)
 
 
+class TestChronosAgentInitValidation(unittest.TestCase):
+
+    def test_rejects_non_positive_mission_duration(self) -> None:
+        mock_fhe = MagicMock()
+        mock_posw = MagicMock()
+        mock_drand = AsyncMock()
+        mock_fhe.get_private_key_bytes.return_value = bytearray(b"k" * 32)
+
+        with self.assertRaises(ValueError):
+            ChronosAgent(mock_fhe, mock_posw, mock_drand, mission_duration_sec=0)
+        with self.assertRaises(ValueError):
+            ChronosAgent(mock_fhe, mock_posw, mock_drand, mission_duration_sec=-3)
+
+    def test_rejects_snark_prover_without_prove(self) -> None:
+        mock_fhe = MagicMock()
+        mock_posw = MagicMock()
+        mock_drand = AsyncMock()
+        mock_fhe.get_private_key_bytes.return_value = bytearray(b"k" * 32)
+
+        with self.assertRaises(TypeError):
+            ChronosAgent(
+                mock_fhe,
+                mock_posw,
+                mock_drand,
+                mission_duration_sec=3,
+                snark_prover=object(),
+            )
+
+
 class TestChronosAgentMission(unittest.IsolatedAsyncioTestCase):
 
     @patch("chronos_agent.MemorySanitizer.zeroize_buffer")

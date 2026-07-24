@@ -140,6 +140,12 @@ class TestDrandClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CryptographicSanityError):
             self.client._verify_bls_signature(bad_round)
 
+    def test_invalid_quicknet_public_key_length_raises(self) -> None:
+        """A malformed quicknet public key length must raise CryptographicSanityError."""
+        with patch("drand_client._DRAND_QUICKNET_PUBLIC_KEY", "aa" * 95):
+            with self.assertRaises(CryptographicSanityError):
+                self.client._verify_bls_signature(_VALID_ROUND)
+
     # --- wait_for_round ---------------------------------------------------
 
     @patch("drand_client.DrandClient.fetch_latest_round", new_callable=AsyncMock)
@@ -192,6 +198,13 @@ class TestDrandClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["round"], 200)
         self.assertEqual(mock_fetch.call_count, 3)
+
+    async def test_wait_for_round_rejects_invalid_inputs(self) -> None:
+        """target_round and polling_interval must be positive integers."""
+        with self.assertRaises(ValueError):
+            await self.client.wait_for_round(0)
+        with self.assertRaises(ValueError):
+            await self.client.wait_for_round(10, polling_interval=0)
 
     def test_invalid_bls_signature_fails_verification_with_py_ecc(self) -> None:
         """When py_ecc is active, an invalid signature must raise CryptographicSanityError."""
