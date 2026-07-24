@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------------
 # STAGE 1: Builder
 # ------------------------------------------------------------------------------
-FROM rust:1.80-slim-bullseye AS builder
+FROM rust:slim-bullseye AS builder
 
 # Install build dependencies required for compiling the cryptography
 RUN apt-get update && \
