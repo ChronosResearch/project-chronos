@@ -3,20 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chronos WASM Dashboard</title>
+    <title>CHRONOS / Research Prototype</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Custom Keyframes */
-        @keyframes fade-in {
-            from { opacity: 0; }
-            to { opacity: 1; }
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Lora:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        serif: ['Lora', 'serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eef2f7',
+                            900: '#111827',
+                            accent: '#5b5bd6',
+                            soft: '#ede9fe',
+                            green: '#166534',
+                            greensoft: '#dcfce7',
+                        }
+                    }
+                }
+            }
         }
-        .animate-fade-in {
-            animation: fade-in 0.5s ease-out;
-        }
-    </style>
+    </script>
 </head>
-<body class="bg-slate-900 text-white">
+<body class="bg-brand-50 text-brand-900 antialiased font-sans">
     <div id="main"></div>
 </body>
 </html>
