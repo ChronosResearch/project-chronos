@@ -1,4 +1,5 @@
-import json, urllib.request
+import json
+import urllib.request
 
 with open('runs.json') as f:
     data = json.load(f)

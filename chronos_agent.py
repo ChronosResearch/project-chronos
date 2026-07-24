@@ -116,6 +116,16 @@ class ChronosAgent:
         snark_prover: Optional[Any] = None,
         ai_brain: Optional[IAgentBrain] = None,
     ) -> None:
+        if (
+            not isinstance(mission_duration_sec, int)
+            or isinstance(mission_duration_sec, bool)
+            or mission_duration_sec <= 0
+        ):
+            raise ValueError(
+                "mission_duration_sec must be a positive integer "
+                f"(got {mission_duration_sec!r})."
+            )
+
         # --- Anti-Tamper Engine -------------------------------------------
         # Imported here to avoid circular-import at module level.
         # Skipped entirely in CI/pytest via the CHRONOS_DISABLE_ANTI_TAMPER
@@ -139,6 +149,10 @@ class ChronosAgent:
 
         # SNARK prover: real Groth16 backend or NoopSNARKProver stub.
         self._snark_prover = snark_prover if snark_prover is not None else NoopSNARKProver()
+        if not hasattr(self._snark_prover, "prove"):
+            raise TypeError(
+                "snark_prover must provide a prove(public_inputs, witness) method."
+            )
         
         # AI Brain: real GitHubModelsBrain or NoopAIBrain stub.
         self.ai_brain = ai_brain if ai_brain is not None else NoopAIBrain()

@@ -26,6 +26,19 @@ class TestPoSWManager(unittest.TestCase):
         """_hashes_per_second must be positive after calibration."""
         self.assertGreater(self.posw._hashes_per_second, 0)
 
+    def test_constructor_rejects_non_positive_duration(self) -> None:
+        """target_duration_seconds must be a positive integer."""
+        with self.assertRaises(ValueError):
+            PoSWManager(target_duration_seconds=0)
+        with self.assertRaises(ValueError):
+            PoSWManager(target_duration_seconds=-1)
+
+    @patch.object(PoSWManager, "_calibrate", return_value=0)
+    def test_constructor_rejects_non_positive_hash_rate(self, _mock_calibrate) -> None:
+        """A non-positive calibration result must fail fast."""
+        with self.assertRaises(RuntimeError):
+            PoSWManager(target_duration_seconds=1)
+
     def test_t_equals_rate_times_duration(self) -> None:
         """T must equal hashes_per_second × target_duration_seconds."""
         expected_t = self.posw._hashes_per_second * self.posw.target_duration_seconds

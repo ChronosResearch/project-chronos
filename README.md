@@ -64,15 +64,35 @@ project-chronos/
 
 ---
 
+## Architecture (Prototype)
+
+```text
+drand quicknet ──► deadline round
+                     │
+                     ▼
+FHE engine ──► encrypted inference ──► mission phase
+                     │
+                     ▼
+SHA-256 PoSW (Python) / VDF engine (Rust prototype target)
+                     │
+                     ▼
+pre-erasure commitment (Schnorr NIZK, Python) + memory wipe
+                     │
+                     ▼
+SNARK prover interface (ISNARKProver; production backend required)
+```
+
+---
+
 ## Prototype vs. Paper Specification
 
 This is a research prototype. The table below documents where the implementation diverges from the formal paper and why.
 
 | Subsystem | Paper Specification | Current Implementation | Status |
 |-----------|--------------------|-----------------------|--------|
-| FHE | TFHE-rs boolean circuits | TFHE-rs FheUint32 (Zama library) | Prototype |
-| VDF | Wesolowski VDF over MPC RSA modulus | Wesolowski VDF over local RSA modulus | Prototype |
-| Erasure Proof | Groth16 SNARK | Arkworks Groth16 over BLS12-381 | Prototype |
+| FHE | TFHE-rs boolean circuits | Paillier additively-homomorphic path in Python reference; TFHE-rs path in Rust prototype | Prototype |
+| Sequential time-lock | Wesolowski VDF over MPC RSA modulus | SHA-256 PoSW hash chain in Python; Wesolowski backend is a production target behind `IVDFEngine` | Prototype Stub |
+| Erasure attestation | Groth16 SNARK | Schnorr pre-erasure commitment in Python; Groth16 backend is a production target behind `ISNARKProver` | Prototype Stub |
 | Modulus Generation | Diogenes MPC | Local hardcoded constants | Prototype Stub |
 | Time Oracle | drand quicknet chain | drand quicknet chain | Prototype |
 | Memory Erasure | Triple-pass volatile wipe | Triple-pass write_volatile + compiler_fence (Rust) | Prototype |
@@ -120,8 +140,8 @@ This is a research prototype. The table below documents where the implementation
 | Property | Mechanism | Assumption |
 |----------|-----------|------------|
 | Plaintext blindness | TFHE-rs FHE inference | TFHE CPA security |
-| Time-bound key access | Wesolowski VDF over RSA modulus | Factoring hardness + VDF sequentiality |
-| Erasure attestation | Arkworks Groth16 SNARK over BLS12-381 | Groth16 q-PKE |
+| Time-bound key access | SHA-256 PoSW (Python reference) / Wesolowski VDF (Rust production target) | Sequential-work hardness / factoring hardness (for Wesolowski path) |
+| Erasure attestation | Schnorr pre-erasure commitment (Python) / Groth16 via `ISNARKProver` (production target) | Schnorr discrete-log assumptions / Groth16 q-PKE |
 | Tamper detection | CPU timing daemon + mlock | OS memory model |
 
 ### What CHRONOS Does NOT Guarantee
@@ -149,6 +169,16 @@ cargo test
 pip install -e ".[dev]"
 CHRONOS_DISABLE_ANTI_TAMPER=true pytest tests/ -v
 ```
+
+---
+
+## Reproducibility and Benchmark Guardrails
+
+- Use a clean virtual environment and run `pip install -e ".[dev]"`.
+- Run tests with `CHRONOS_DISABLE_ANTI_TAMPER=true pytest tests/ -q`.
+- Run benchmark harness with `python benchmark.py`.
+- Report measured outputs only; rows without executed measurements must be marked **not measured**.
+- Do not present prototype-only stubs (`NoopVDFEngine`, `NoopSNARKProver`) as production cryptographic evidence.
 
 ---
 
