@@ -1,5 +1,5 @@
 > [!NOTE]
-> 🔧 **Rust prototype underway.** The Python implementation is the current reference. Active development in progress — not production ready.
+> **Rust prototype underway.** The Python implementation is the current reference. Active development in progress — not production ready.
 
 # Project CHRONOS
 
