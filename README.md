@@ -1,3 +1,6 @@
+> [!NOTE]
+> 🔧 **Rust prototype underway.** The Python implementation is the current reference. Active development in progress — not production ready.
+
 # Project CHRONOS
 
 **Research Prototype v1.0.0**  
