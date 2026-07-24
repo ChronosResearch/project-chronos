@@ -1,0 +1,65 @@
+name: Publish Python Package
+
+on:
+  release:
+    types: [published]
+
+# FAIL-SAFE: Prevent duplicate release builds if tags are force-pushed or re-released rapidly
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-upload-wheel:
+    runs-on: ubuntu-latest
+    # FAIL-SAFE: Cap build time to prevent hanging on complex dependency resolution
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      # FAIL-SAFE: Validate distribution metadata and structural integrity before release
+      - name: Validate distributions with Twine
+        run: twine check dist/*
+
+      # FAIL-SAFE: Preserve build artifacts in GitHub's storage for audit trails even if release upload fails
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 30
+
+      # FAIL-SAFE: Verify artifacts exist before attempting release attachment
+      - name: Verify distribution files exist
+        run: |
+          if [ ! -f dist/*.whl ] && [ ! -f dist/*.tar.gz ]; then
+            echo "ERROR: No distribution files found in dist/"
+            exit 1
+          fi
+          echo "Distributions ready for release:"
+          ls -la dist/
+
+      - name: Upload artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          # FAIL-SAFE: Ensure the action fails if no files are matched
+          fail_on_unmatched_files: true
