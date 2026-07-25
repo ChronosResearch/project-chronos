@@ -336,6 +336,3 @@ class NoopVDFEngine:
 
     def verify(self, g: int, T: int, N: bytes, y: int, pi_bytes: bytes) -> bool:
         return False
-
-
-
