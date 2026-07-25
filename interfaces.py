@@ -338,22 +338,4 @@ class NoopVDFEngine:
         return False
 
 
-@runtime_checkable
-class IAgentBrain(Protocol):
-    """Contract for the Autonomous AI Brain (§4).
 
-    The AI Brain evaluates the cryptographic context of the agent to make
-    autonomous decisions before the Dead Man's Switch fires.
-    """
-
-    def evaluate_mission_status(self, context: Dict[str, Any]) -> str:
-        """Evaluate the current mission context and return an autonomous decision.
-
-        Args:
-            context: A dictionary containing cryptographic state (e.g., FHE status,
-                     drand rounds, target deadline).
-
-        Returns:
-            A string containing the AI's autonomous reasoning and decision.
-        """
-        ...

@@ -1,5 +1,5 @@
-> [!NOTE]
-> **Rust prototype underway.** The Python implementation is the current reference. Active development in progress — not production ready.
+> [!WARNING]
+> **Actively Under Construction:** I am actively migrating the core node to Rust and pushing code daily. Because this is a rapidly evolving prototype, expect breaking changes and occasional instability in the bleeding-edge Docker packages.
 
 # Project CHRONOS
 

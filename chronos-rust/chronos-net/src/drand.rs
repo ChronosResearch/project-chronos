@@ -4,7 +4,8 @@ use reqwest;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
 pub struct DrandBeacon {
     pub round: u64,
     pub randomness: String,
