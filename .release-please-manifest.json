@@ -1,8 +1,8 @@
 {
-  "chronos-rust/chronos-agent": "0.1.0",
-  "chronos-rust/chronos-core": "0.1.0",
-  "chronos-rust/chronos-crypto": "0.1.0",
-  "chronos-rust/chronos-net": "0.1.0",
-  "chronos-rust/chronos-dashboard": "0.1.0",
-  "chronos-rust/chronos-ebpf": "0.1.0"
+  "chronos-rust/chronos-agent": "0.1.1",
+  "chronos-rust/chronos-core": "0.1.1",
+  "chronos-rust/chronos-crypto": "0.1.1",
+  "chronos-rust/chronos-net": "0.1.1",
+  "chronos-rust/chronos-dashboard": "0.1.1",
+  "chronos-rust/chronos-ebpf": "0.1.1"
 }

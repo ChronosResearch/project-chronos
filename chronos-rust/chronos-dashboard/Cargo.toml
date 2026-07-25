@@ -1,6 +1,6 @@
 [package]
 name = "chronos-dashboard"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Chronos WASM Dashboard for visualizing TFHE Neural Network execution"
 
