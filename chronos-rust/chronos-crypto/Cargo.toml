@@ -13,7 +13,7 @@ num-bigint = { workspace = true, features = ["rand"] }
 num-traits.workspace = true
 curve25519-dalek = { workspace = true, features = ["rand_core"] }
 rand.workspace = true
-tfhe = { version = "0.7", features = ["integer"] }
+tfhe = { version = "0.7", features = ["integer", "seeder_unix"] }
 ark-ff = "0.4.0"
 ark-ec = "0.4.0"
 ark-relations = "0.4.0"
