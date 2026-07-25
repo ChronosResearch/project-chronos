@@ -159,7 +159,7 @@ Kumar, S. (2026).
 For release-specific claim language and artifact scope, use GitHub Releases and keep wording aligned with this README and SECURITY.md.
 
 ## License
-This project is licensed under the GNU Affero General Public License v3.0 (AGPLv3).
-See the `LICENSE` file for full details.
+Proprietary — All Rights Reserved.
+No use, copying, modification, or distribution is permitted without explicit written permission from the author.
 
 **Contact:** shashankchoudhary792@gmail.com
