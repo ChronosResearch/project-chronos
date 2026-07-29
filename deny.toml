@@ -1,0 +1,46 @@
+# cargo-deny configuration for CHRONOS workspace.
+# Run: cargo deny check
+
+[advisories]
+# HALT the build if any crate has a RUSTSEC vulnerability with CVSS >= 8.0.
+vulnerability = "deny"
+unmaintained  = "warn"
+yanked        = "deny"
+notice        = "warn"
+
+# Known advisories from transitive deps that are not yet patched upstream.
+# Review each before ignoring — the comment must explain why it's acceptable.
+ignore = [
+    # RUSTSEC-2025-0055: tracing-subscriber 0.2.x ANSI escape injection.
+    # We use 0.3.19 which is not affected; this advisory targets 0.2.x in
+    # transitive deps from older axum-extra. Excluded pending upstream fix.
+    "RUSTSEC-2025-0055",
+    # RUSTSEC-2025-0141: bincode unmaintained (used by tfhe-rs).
+    "RUSTSEC-2025-0141",
+    # RUSTSEC-2024-0388: derivative unmaintained (used by arkworks).
+    "RUSTSEC-2024-0388",
+]
+
+[licenses]
+# Only allow OSI-compatible licences.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+]
+copyleft = "warn"
+
+[bans]
+# Prevent multiple versions of the same crate from inflating binary size.
+multiple-versions = "warn"
+# Block known-dangerous patterns.
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git      = "deny"

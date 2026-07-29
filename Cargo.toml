@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/*"
+]
+
+[workspace.dependencies]
+# ── TFHE (Official Zama crate, pinned to exact patch) ─────────────────────────
+tfhe = { version = "0.8.7", features = ["integer", "x86_64"] }
+
+# ── Arkworks (SNARKs, pinned) ─────────────────────────────────────────────────
+ark-groth16   = "0.4.0"
+ark-bn254     = "0.4.0"
+ark-ff        = "0.4.2"
+ark-relations = "0.4.0"
+
+# ── GMP (Wesolowski VDF) ──────────────────────────────────────────────────────
+gmp-mpfr-sys = "1.7.1"
+
+# ── Async & HTTP API ──────────────────────────────────────────────────────────
+tokio   = { version = "1.43.0", features = ["full"] }
+axum    = "0.8.4"
+reqwest = { version = "0.12.28", features = ["json", "rustls-tls"], default-features = false }
+
+# ── Error handling ────────────────────────────────────────────────────────────
+thiserror = "2.0.12"
+anyhow    = "1.0.98"
+
+# ── Logging & CLI ─────────────────────────────────────────────────────────────
+tracing            = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+clap               = { version = "4.5.40", features = ["derive"] }
+
+# ── Crypto utilities ──────────────────────────────────────────────────────────
+zeroize    = { version = "1.8.1", features = ["derive"] }
+sha2       = "0.10.9"
+hkdf       = "0.12.4"
+libc       = "0.2.189"
+hex        = "0.4.3"
+num-bigint = "0.4.8"
+num-traits = "0.2.19"
+serde      = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.140"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+config = { version = "0.14.1", default-features = false, features = ["toml"] }
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+prometheus = { version = "0.13.4", features = ["process"] }
+once_cell  = "1.20.3"
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+tokio-test = "0.4.4"
+
+[profile.release]
+lto           = true
+codegen-units = 1
+strip         = "symbols"
+opt-level     = 3
+panic         = "abort"
+
+[profile.dev]
+opt-level = 0
+debug     = true

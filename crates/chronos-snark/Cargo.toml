@@ -1,0 +1,15 @@
+[package]
+name = "chronos-snark"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chronos-core = { path = "../chronos-core" }
+ark-ff = { workspace = true }
+ark-relations = { workspace = true }
+ark-groth16 = { workspace = true }
+ark-bn254 = { workspace = true }
+num-bigint = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+sha2 = { workspace = true }

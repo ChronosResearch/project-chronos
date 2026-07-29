@@ -1,0 +1,26 @@
+# Force LF line endings in the repository for all text files.
+# This prevents Windows CRLF noise in diffs.
+* text=auto eol=lf
+
+# Rust source
+*.rs text eol=lf
+
+# TOML
+*.toml text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# YAML / GitHub Actions
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binaries — no EOL conversion
+*.bin binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.gif binary

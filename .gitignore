@@ -1,82 +1,115 @@
-# Python
+# ── Rust ──────────────────────────────────────────────────────────────────────
+target/
+chronos-rust/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyo
 *.pyd
 .Python
-
-# Virtual environments
 .venv/
 venv/
 env/
 ENV/
-
-# Distribution / packaging
 build/
 dist/
 *.egg-info/
 *.egg
 .eggs/
-
-# Testing and coverage
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
-
-# Type checking
 .mypy_cache/
+*.pycache
 
-# IDE / Editor
+# ── Node / JS ─────────────────────────────────────────────────────────────────
+node_modules/
+node/
+*.zip
+package-lock.json
+# package.json is tracked only where it belongs (project root if needed)
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.iml
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Secrets and credentials (never commit these)
+# ── Secrets — never commit ────────────────────────────────────────────────────
 .env
 .env.*
 *.pem
 *.key
+*.p12
+*.pfx
 secrets.toml
+certN.bin
+ct_sk.bin
 
-# Compiled LaTeX
+# ── Build artifacts & installers ──────────────────────────────────────────────
+*.exe
+*.msi
+rustup-init.exe
+python-installer.exe
+python.zip
+get-pip.py
+gh.zip
+
+# ── LaTeX ─────────────────────────────────────────────────────────────────────
 *.aux
 *.log
 *.out
 *.toc
 *.synctex.gz
+*.pdf
 
-# Internal tooling (never commit to public repo)
+# ── Generated / temporary docs ────────────────────────────────────────────────
+CHRONOS_PAPER_v2.pdf
+CHRONOS_PAPER_v2.html
+resume.html
+make_pdf.js
+make_pdf.mjs
+generate_pdf.py
+real_results.md
+job_log.txt
+
+# ── Internal tooling — not for public repo ────────────────────────────────────
 .agents/
 ..agents/
-sidthebuilder.github.io/
+lightcone_application.md
 ORIGINAL_REQUEST.md
 PROJECT.md
 TEST_INFRA.md
 TEST_READY.md
 paper_extracted.txt
-
-# Generated scripts and output
 push_to_github.bat
-real_results.md
-generate_pdf.py
-CHRONOS_PAPER_v2.pdf
-CHRONOS_PAPER_v2.html
-python/
-rustup-init.exe
-get-pip.py
-gh.zip
-job_log.txt
-python-installer.exe
-python.zip
+ENTERPRISE_AUDIT_REPORT.md
+PRODUCTION_DEPLOYMENT.md
 
-# Rust build artifacts (never commit compiled output)
-chronos-rust/target/
+# ── Third-party code not part of this project ────────────────────────────────
+third_party/
+
+# ── Binaries committed by mistake ────────────────────────────────────────────
 bin/
+*.bin
+
+# ── Contract ABIs and build artifacts (Hardhat) ──────────────────────────────
+artifacts/
+cache/
+
+# ── Benchmarks and profiling output ──────────────────────────────────────────
+perf.data
+perf.data.old
+flamegraph.svg
