@@ -1,4 +1,4 @@
-name: CHRONOS Rust Enterprise CI
+name: CI
 
 on:
   push:
@@ -160,9 +160,9 @@ jobs:
         run: cargo +nightly miri test --package chronos-core
 
   # ── Final gate ────────────────────────────────────────────────────────────────
-  enterprise-gate:
-    name: "Enterprise Gate (All Steps Must Pass)"
+  ci-gate:
+    name: "All checks"
     needs: [clippy, security, deps, test, build-release, docs, miri]
     runs-on: ubuntu-latest
     steps:
-      - run: echo "All 29 CI steps passed — ENTERPRISE GO"
+      - run: echo "All CI steps passed"
