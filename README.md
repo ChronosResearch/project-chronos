@@ -2,7 +2,7 @@
 
 Cryptographic dead man's switch using FHE, Verifiable Delay Functions, and SNARK-based erasure proofs.
 
-**Paper:** [CHRONOS: Ephemeral AI Agents via FHE Time-Locked Secrets](https://zenodo.org/records/15794814) (preprint)
+**Paper:** [CHRONOS: Ephemeral AI Agents via FHE Time-Locked Secrets](https://zenodo.org/records/21534311) (preprint)
 
 ## What this is
 
