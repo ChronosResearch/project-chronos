@@ -2,6 +2,8 @@
 
 Cryptographic dead man's switch using FHE, Verifiable Delay Functions, and SNARK-based erasure proofs.
 
+**Paper:** [CHRONOS: Ephemeral AI Agents via FHE Time-Locked Secrets](https://zenodo.org/records/15794814) (preprint)
+
 ## What this is
 
 A Rust prototype of the CHRONOS protocol. An AI agent encrypts its secret key under FHE, time-locks it with a VDF, and proves it wiped the plaintext via a Groth16 SNARK. No trusted hardware required.
