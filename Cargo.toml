@@ -6,16 +6,21 @@ members = [
 
 [workspace.dependencies]
 # ── TFHE (Official Zama crate, pinned to exact patch) ─────────────────────────
-tfhe = { version = "0.8.7", features = ["integer", "x86_64"] }
+# x86_64 feature required for hardware acceleration; on aarch64 use no arch feature.
+tfhe = { version = "0.8.7", features = ["integer"] }
 
 # ── Arkworks (SNARKs, pinned) ─────────────────────────────────────────────────
-ark-groth16   = "0.4.0"
-ark-bn254     = "0.4.0"
-ark-ff        = "0.4.2"
-ark-relations = "0.4.0"
+ark-groth16              = "0.4.0"
+ark-bn254                = "0.4.0"
+ark-ff                   = "0.4.2"
+ark-relations            = "0.4.0"
+ark-r1cs-std             = "0.4.0"
+ark-crypto-primitives    = { version = "0.4.0", features = ["crh", "merkle_tree", "commitment", "prf"] }
+ark-std                  = "0.4.0"
+ark-serialize            = "0.4.2"
 
-# ── GMP (Wesolowski VDF) ──────────────────────────────────────────────────────
-gmp-mpfr-sys = "1.7.1"
+# ── GMP (optional, x86_64 only — chronos-vdf uses pure-Rust num-bigint fallback) ──
+# gmp-mpfr-sys = "1.7.1"
 
 # ── Async & HTTP API ──────────────────────────────────────────────────────────
 tokio   = { version = "1.43.0", features = ["full"] }
@@ -37,10 +42,14 @@ sha2       = "0.10.9"
 hkdf       = "0.12.4"
 libc       = "0.2.189"
 hex        = "0.4.3"
-num-bigint = "0.4.8"
+num-bigint = { version = "0.4.8", features = ["rand"] }
 num-traits = "0.2.19"
 serde      = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
+aes-gcm    = "0.10.3"
+blst       = "0.3.13"
+rand       = "0.8.5"
+rand_core  = "0.6.4"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 config = { version = "0.14.1", default-features = false, features = ["toml"] }

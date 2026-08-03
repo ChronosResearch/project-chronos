@@ -2,7 +2,6 @@ use crate::error::{ChronosError, ChronosResult};
 use std::sync::Arc;
 use std::sync::RwLock;
 use tfhe::{generate_keys, set_server_key, ClientKey, ConfigBuilder, ServerKey};
-use zeroize::Zeroize;
 
 /// Holds the FHE server evaluation key in a `RwLock` so many concurrent
 /// inference requests can read it without contention, while a single writer
@@ -48,10 +47,9 @@ impl FheEngine {
             *guard = Some(server_key);
         }
 
-        // Zeroize the client key material immediately — it must never hit disk.
-        // STEP 7: This method is called from spawn_blocking, so we are on an
-        // OS thread and the zeroize + drop is deterministic.
-        client_key.zeroize();
+        // Drop the client key immediately — it must never hit disk.
+        // tfhe::ClientKey does not implement Zeroize without the x86_64 feature;
+        // dropping it here ensures the memory is freed as soon as possible.
         drop(client_key);
 
         Ok(())

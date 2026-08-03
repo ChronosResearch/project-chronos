@@ -1,35 +1,28 @@
 # Default configuration for the CHRONOS agent.
-# All values here may be overridden by placing a config.toml in the working
-# directory, or via the CHRONOS__ environment variable prefix
-# (e.g. CHRONOS__NETWORK__DRAND_URL overrides network.drand_url).
+# All values may be overridden via config.toml or CHRONOS__ env vars.
 
 [mission]
-# Total mission duration in seconds.  The watchdog forces Erased state after
-# this many seconds if the VDF has not completed naturally.
-t_seconds = 3600
-
-# STEP 19 – In debug builds the actual T used for VDF is min(t_vdf_steps, 10).
-# In release builds the full value is used.
-t_vdf_steps = 1_000_000
+t_seconds    = 3600
+t_vdf_steps  = 1_000_000
 
 [crypto]
-# RSA modulus size for the MPC-generated group order.
-rsa_bits = 2048
-
-# Path to the MPC-generated RSA modulus (big-endian binary).
-cert_n_path = "certN.bin"
-
-# Path to the encrypted secret key ciphertext.
-ct_sk_path = "ct_sk.bin"
+rsa_bits     = 2048
+cert_n_path  = "certN.bin"
+ct_sk_path   = "ct_sk.bin"
 
 [network]
-# Drand HTTP API endpoint.
-drand_url = "https://api.drand.sh/public/latest"
-# Timeout for the drand HTTP request in seconds.
-drand_timeout_secs = 10
+drand_url           = "https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/latest"
+drand_timeout_secs  = 10
 
 [server]
-# Main API listen address.
-api_addr = "127.0.0.1:8080"
-# Prometheus metrics listen address.
+api_addr     = "127.0.0.1:8080"
 metrics_addr = "127.0.0.1:9090"
+
+[tls]
+enabled          = false
+# ca_cert_path   = "ca.pem"
+# agent_cert_path = "agent.pem"
+# agent_key_path  = "agent.key"
+
+# VDF backend: "wesolowski" (classical) or "isogeny" (post-quantum simulation)
+vdf_backend = "wesolowski"
