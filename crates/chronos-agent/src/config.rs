@@ -2,20 +2,42 @@ use chronos_core::{ChronosError, ChronosResult};
 use serde::Deserialize;
 
 /// Top-level configuration for the CHRONOS agent.
-///
-/// Loaded from `config/default.toml` (shipped) then overlaid with an optional
-/// `config.toml` in the working directory, then environment variables
-/// (`CHRONOS__SECTION__KEY`).
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChronosConfig {
-    /// Mission timing parameters.
     pub mission: MissionConfig,
-    /// Cryptographic parameters.
     pub crypto: CryptoConfig,
-    /// Network parameters.
     pub network: NetworkConfig,
-    /// HTTP server addresses.
     pub server: ServerConfig,
+    /// mTLS configuration (optional; defaults to disabled).
+    #[serde(default)]
+    pub tls: TlsConfig,
+    /// VDF backend: "wesolowski" or "isogeny".
+    #[serde(default = "default_vdf_backend")]
+    pub vdf_backend: String,
+}
+
+fn default_vdf_backend() -> String {
+    "wesolowski".to_string()
+}
+
+/// TLS configuration (inlined here to avoid circular module dependency).
+#[derive(Debug, Deserialize, Clone)]
+pub struct TlsConfig {
+    pub enabled: bool,
+    pub ca_cert_path: Option<String>,
+    pub agent_cert_path: Option<String>,
+    pub agent_key_path: Option<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ca_cert_path: None,
+            agent_cert_path: None,
+            agent_key_path: None,
+        }
+    }
 }
 
 /// Mission timing configuration.
