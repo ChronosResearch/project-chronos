@@ -50,10 +50,7 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
 
-      - name: cargo audit (block yanked + unsound only)
-        run: cargo audit --deny unsound --deny yanked
-
-      - name: cargo deny check
+      - name: cargo deny check (advisories + licenses + bans)
         run: cargo deny check
 
   # ── Dependency tree ──────────────────────────────────────────────────────────

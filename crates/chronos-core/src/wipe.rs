@@ -14,7 +14,7 @@ use std::sync::atomic::{compiler_fence, Ordering};
 /// # Panics
 /// This function never panics.
 #[inline(never)] // Prevent inlining so the symbol survives stripping in tests.
-pub fn secure_wipe(ptr: *mut u8, len: usize) {
+pub unsafe fn secure_wipe(ptr: *mut u8, len: usize) {
     if ptr.is_null() || len == 0 {
         return;
     }
@@ -53,7 +53,8 @@ mod tests {
             assert_eq!(unsafe { std::ptr::read_volatile(ptr.add(i)) }, 0xAA);
         }
 
-        secure_wipe(ptr, SZ);
+        // SAFETY: buf is alive, ptr valid, SZ bytes allocated, single-threaded test.
+        unsafe { secure_wipe(ptr, SZ); }
 
         // Post-condition: final pass writes 0xFF.
         for i in 0..SZ {
@@ -69,13 +70,15 @@ mod tests {
     #[test]
     fn test_secure_wipe_null_ptr_is_noop() {
         // Must not panic or segfault.
-        secure_wipe(std::ptr::null_mut(), 64);
+        // SAFETY: null ptr is handled inside secure_wipe as a no-op.
+        unsafe { secure_wipe(std::ptr::null_mut(), 64); }
     }
 
     #[test]
     fn test_secure_wipe_zero_len_is_noop() {
         let mut buf = [0u8; 1];
-        secure_wipe(buf.as_mut_ptr(), 0);
+        // SAFETY: zero len is handled inside secure_wipe as a no-op.
+        unsafe { secure_wipe(buf.as_mut_ptr(), 0); }
         assert_eq!(buf[0], 0); // untouched
     }
 }

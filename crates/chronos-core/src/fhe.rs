@@ -34,7 +34,7 @@ impl FheEngine {
     /// Returns [`ChronosError::Fhe`] if key generation fails.
     pub fn generate_and_install_keys(&self) -> ChronosResult<()> {
         let config = ConfigBuilder::default().build();
-        let (mut client_key, server_key) = generate_keys(config);
+        let (client_key, server_key) = generate_keys(config);
 
         // Install the server key for global inference use.
         set_server_key(server_key.clone());

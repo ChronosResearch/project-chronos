@@ -69,7 +69,8 @@ mod tests {
         let mut sk = vec![0xAAu8; 64];
         let m_pre = sk.clone();
         // STEP 9: Wipe then verify via prove_erasure.
-        secure_wipe(sk.as_mut_ptr(), sk.len());
+        // SAFETY: sk is alive, ptr valid, single-threaded test.
+        unsafe { secure_wipe(sk.as_mut_ptr(), sk.len()); }
         let proof = prove_erasure(&sk, &m_pre, &BigUint::from(1u32))?;
         assert_eq!(proof.len(), 32);
         Ok(())

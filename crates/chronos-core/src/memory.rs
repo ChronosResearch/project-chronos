@@ -81,7 +81,8 @@ impl Drop for LockedBytes {
         }
 
         // Wipe before unlocking so the plaintext never exists in swappable memory.
-        secure_wipe(ptr, len);
+        // SAFETY: ptr/len are valid, buffer is alive, no concurrent access.
+        unsafe { secure_wipe(ptr, len); }
 
         #[cfg(unix)]
         {

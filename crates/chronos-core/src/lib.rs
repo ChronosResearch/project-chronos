@@ -61,7 +61,8 @@ mod tests {
     fn test_secure_wipe_final_pattern() {
         let mut data = vec![0x42u8; 64];
         let ptr = data.as_mut_ptr();
-        secure_wipe(ptr, data.len());
+        // SAFETY: ptr valid, data alive, single-threaded test.
+        unsafe { secure_wipe(ptr, data.len()); }
         for byte in &data {
             assert_eq!(*byte, 0xFF);
         }

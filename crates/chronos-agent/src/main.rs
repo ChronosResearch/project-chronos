@@ -373,7 +373,8 @@ async fn init_handler(State(app): State<AppState>) -> impl IntoResponse {
         let m_pre = sk_buf.clone();
 
         // Wipe the secret key.
-        secure_wipe(sk_buf.as_mut_ptr(), sk_buf.len());
+        // SAFETY: sk_buf is alive, ptr valid, no concurrent access during shutdown.
+        unsafe { secure_wipe(sk_buf.as_mut_ptr(), sk_buf.len()); }
         info!(target: "chronos", "Secret key wiped (triple-pass)");
 
         // Generate Groth16 erasure proof.
