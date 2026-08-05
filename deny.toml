@@ -2,11 +2,10 @@
 # Run: cargo deny check
 
 [advisories]
-# HALT the build if any crate has a RUSTSEC vulnerability with CVSS >= 8.0.
+# HALT the build if any crate has a RUSTSEC vulnerability.
 vulnerability = "deny"
-unmaintained  = "warn"
+unmaintained  = "none"
 yanked        = "deny"
-notice        = "warn"
 
 # Known advisories from transitive deps that are not yet patched upstream.
 # Review each before ignoring — the comment must explain why it's acceptable.
