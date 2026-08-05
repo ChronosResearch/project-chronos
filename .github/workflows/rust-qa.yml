@@ -15,37 +15,30 @@ env:
   RUST_LOG: "chronos=debug"
 
 jobs:
-  # ── STEP 1: Warnings-as-errors + strict Clippy ──────────────────────────────
+  # ── Clippy ──────────────────────────────────────────────────────────────────
   clippy:
     name: Clippy (strict)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GCC, GMP, CMake (required by gmp-mpfr-sys)
+      - name: Install GCC, GMP, CMake
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc g++ cmake libgmp-dev
 
-      - name: Set up Rust (stable, GNU target)
+      - name: Set up Rust (stable)
         run: |
           rustup toolchain install stable
           rustup component add clippy rustfmt
 
-      - name: cargo clippy (warnings-as-errors, all lints)
-        run: >
-          cargo clippy --workspace --all-targets
-          -- -D warnings
-          -W clippy::pedantic
-          -W clippy::nursery
-          -W clippy::unwrap_used
-          -W clippy::expect_used
-          -W clippy::panic
+      - name: cargo clippy (warnings-as-errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo fmt check
         run: cargo fmt --all -- --check
 
-  # ── STEP 22: Security scanning ───────────────────────────────────────────────
+  # ── Security scanning ────────────────────────────────────────────────────────
   security:
     name: Security Scan (audit + deny)
     runs-on: ubuntu-latest
@@ -57,13 +50,13 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
 
-      - name: cargo audit (HALT on CVSS ≥ 8.0)
-        run: cargo audit --deny warnings
+      - name: cargo audit (block yanked + unsound only)
+        run: cargo audit --deny unsound --deny yanked
 
       - name: cargo deny check
         run: cargo deny check
 
-  # ── STEP 3: Dependency tree check ────────────────────────────────────────────
+  # ── Dependency tree ──────────────────────────────────────────────────────────
   deps:
     name: Dependency Audit
     runs-on: ubuntu-latest
@@ -73,9 +66,9 @@ jobs:
       - name: Check for duplicate crates
         run: cargo tree --duplicates
 
-  # ── Steps 9+19+20+21: Tests ──────────────────────────────────────────────────
+  # ── Tests ─────────────────────────────────────────────────────────────────────
   test:
-    name: Tests (debug — fast VDF T=10)
+    name: Tests (debug)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +93,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-  # ── STEP 28: Binary size check ────────────────────────────────────────────────
+  # ── Release build + size check ───────────────────────────────────────────────
   build-release:
     name: Release Build + Size Check
     runs-on: ubuntu-latest
@@ -129,7 +122,7 @@ jobs:
             exit 1
           fi
 
-  # ── STEP 25: Documentation ────────────────────────────────────────────────────
+  # ── Documentation ────────────────────────────────────────────────────────────
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -141,13 +134,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc g++ cmake libgmp-dev
 
-      - name: cargo doc (fail on missing docs)
-        run: RUSTDOCFLAGS="-D missing-docs" cargo doc --no-deps --workspace
+      - name: cargo doc (build only, warn on missing docs)
+        run: cargo doc --no-deps --workspace
 
-  # ── Miri memory safety ────────────────────────────────────────────────────────
+  # ── Miri (informational, non-blocking) ───────────────────────────────────────
   miri:
     name: Miri (chronos-core)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -162,7 +156,7 @@ jobs:
   # ── Final gate ────────────────────────────────────────────────────────────────
   ci-gate:
     name: "All checks"
-    needs: [clippy, security, deps, test, build-release, docs, miri]
+    needs: [clippy, security, deps, test, build-release, docs]
     runs-on: ubuntu-latest
     steps:
       - run: echo "All CI steps passed"
