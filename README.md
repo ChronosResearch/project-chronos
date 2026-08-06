@@ -1,5 +1,7 @@
 # CHRONOS — Prototype
 
+[![CI](https://github.com/ChronosResearch/project-chronos/actions/workflows/rust-qa.yml/badge.svg)](https://github.com/ChronosResearch/project-chronos/actions/workflows/rust-qa.yml)
+
 Cryptographic dead man's switch using FHE, Verifiable Delay Functions, and SNARK-based erasure proofs.
 
 **Paper:** [CHRONOS: Ephemeral AI Agents via FHE Time-Locked Secrets](https://zenodo.org/records/21534311) (preprint)
@@ -30,8 +32,8 @@ crates/
 | Secure memory wipe + unit test | Working |
 | Graceful shutdown (SIGTERM) | Working |
 | Prometheus metrics | Working |
-| SNARK erasure proof | Stubbed |
-| BLS drand signature verification | Stubbed |
+| SNARK erasure proof | Working |
+| BLS drand signature verification | Working |
 | FHE evaluation circuit | Stubbed |
 
 ## Build
@@ -48,8 +50,6 @@ cargo build --release
 
 ## Gaps
 
-- Groth16 circuit is a single trivial constraint — needs real AES-GCM constraints.
-- BLS pairing for Drand verification not implemented — length check only.
 - FHE evaluation endpoint reverses bytes — needs actual Concrete-ML circuit.
 - `certN.bin` is a placeholder RSA modulus — needs MPC ceremony.
 - mTLS and replay protection are stubbed.
