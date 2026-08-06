@@ -56,6 +56,12 @@ cargo build --release
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for setup. See [AUDIT.md](AUDIT.md) for the full code audit.
 
+## Roadmap & Future Plans
+
+- **Phase 1 (Current):** Working prototype of the CHRONOS protocol with VDF and SNARK erasure proofs.
+- **Phase 2 (Integration):** Merge with CELLHAWK navigation stack for resilient UAV agents.
+- **Phase 3 (Hardware):** True biological storage integration (DNA-Attest) for cryptographic key storage.
+
 ## License
 
 AGPL-3.0 — see [LICENSE](LICENSE).
