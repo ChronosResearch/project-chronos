@@ -36,7 +36,7 @@ pub async fn read_secret_file<P: AsRef<Path>>(path: P) -> ChronosResult<Vec<u8>>
         }
     }
 
-    fs::read(path_ref).await.map_err(|e| ChronosError::Io(e))
+    fs::read(path_ref).await.map_err(ChronosError::Io)
 }
 
 // ─── STEP 18: RFC 5869 HKDF Derivation ───────────────────────────────────────
