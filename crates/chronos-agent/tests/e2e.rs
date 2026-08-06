@@ -13,17 +13,13 @@ use chronos_agent::{
 };
 use chronos_core::{
     fhe::FheEngine,
-    memory::LockedBytes,
     redacted::Redacted,
     wipe::secure_wipe,
     VdfEngine,
 };
 use chronos_vdf::wesolowski::WesolowskiVdf;
 use num_bigint::BigUint;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 // ─── STEP 20: Full Cryptographic Handshake ───────────────────────────────────
 
@@ -69,7 +65,8 @@ async fn test_full_lifecycle_handshake() {
     // ── 4. Memory erasure ─────────────────────────────────────────────────────
     let mut sk_buf = vec![0xDEu8; 64];
     let m_pre = sk_buf.clone(); // snapshot before wipe
-    secure_wipe(sk_buf.as_mut_ptr(), sk_buf.len());
+    // SAFETY: sk_buf is alive, ptr valid, no concurrent access.
+    unsafe { secure_wipe(sk_buf.as_mut_ptr(), sk_buf.len()); }
     let erasure_proof = prove_erasure(&sk_buf, &m_pre, &y).expect("Erasure proof must succeed");
     assert_eq!(erasure_proof.len(), 32, "SHA-256 root must be 32 bytes");
 
@@ -147,7 +144,8 @@ fn test_wipe_volatile_read_not_optimized() {
     const SZ: usize = 1024;
     let mut buf = vec![0xAAu8; SZ];
     let ptr = buf.as_mut_ptr();
-    secure_wipe(ptr, SZ);
+    // SAFETY: buf is alive, ptr valid, no concurrent access.
+    unsafe { secure_wipe(ptr, SZ); }
     for i in 0..SZ {
         // SAFETY: ptr is still valid; secure_wipe does not free memory.
         let byte = unsafe { std::ptr::read_volatile(ptr.add(i)) };

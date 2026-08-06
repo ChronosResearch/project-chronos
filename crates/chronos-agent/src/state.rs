@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, Notify};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Current lifecycle state of the CHRONOS agent.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]

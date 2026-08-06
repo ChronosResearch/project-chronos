@@ -21,7 +21,7 @@ fn default_vdf_backend() -> String {
 }
 
 /// TLS configuration (inlined here to avoid circular module dependency).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct TlsConfig {
     pub enabled: bool,
     pub ca_cert_path: Option<String>,
@@ -29,16 +29,6 @@ pub struct TlsConfig {
     pub agent_key_path: Option<String>,
 }
 
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ca_cert_path: None,
-            agent_cert_path: None,
-            agent_key_path: None,
-        }
-    }
-}
 
 /// Mission timing configuration.
 #[derive(Debug, Deserialize, Clone)]

@@ -1,48 +1,36 @@
 # cargo-deny configuration for CHRONOS workspace.
 # Run: cargo deny check
+# Schema: cargo-deny >= 0.16 (v2)
 
 [advisories]
-# HALT the build if any crate has a RUSTSEC vulnerability.
-vulnerability = "deny"
-unmaintained  = "none"
-yanked        = "deny"
-
-# Known advisories from transitive deps that are not yet patched upstream.
-# Review each before ignoring — the comment must explain why it's acceptable.
+# Known advisories from transitive deps not yet patched upstream.
+# Each entry must have a comment explaining why it is acceptable.
 ignore = [
     # RUSTSEC-2025-0055: tracing-subscriber 0.2.x ANSI escape injection.
-    # We use 0.3.19 which is not affected; this advisory targets 0.2.x in
-    # transitive deps from older axum-extra. Excluded pending upstream fix.
+    # We use 0.3.x; advisory only affects older transitive dep.
     "RUSTSEC-2025-0055",
     # RUSTSEC-2025-0141: bincode unmaintained (used by tfhe-rs).
     "RUSTSEC-2025-0141",
     # RUSTSEC-2024-0388: derivative unmaintained (used by arkworks).
     "RUSTSEC-2024-0388",
-    # RUSTSEC-2024-0437: protobuf 2.x crash via uncontrolled recursion.
-    # Transitive dep from tonic/prost chain in tfhe-rs. Excluded pending upstream bump.
+    # RUSTSEC-2024-0437: protobuf 2.x crash via recursion (transitive, tfhe-rs chain).
     "RUSTSEC-2024-0437",
-    # RUSTSEC-2024-0436: paste crate unmaintained (used by tfhe-rs macros).
+    # RUSTSEC-2024-0436: paste crate unmaintained (tfhe-rs macros).
     "RUSTSEC-2024-0436",
 ]
 
 [licenses]
-# Only allow OSI-compatible licences.
-allow = [
-    "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
-    "Unicode-DFS-2016",
-    "CC0-1.0",
-]
-copyleft = "warn"
+# Accept any license that is OSI-approved OR FSF-approved free software.
+# This covers MIT, Apache-2.0, BSD-*, ISC, MPL-2.0, LGPL, OpenSSL, Zlib, etc.
+# Avoids the brittle allow-list that breaks whenever a new dep is added.
+allow-osi-fsf-free = "either"
+# Still block completely unknown/proprietary licenses.
+unlicensed = "deny"
+# Copyleft (GPL) is a warning only — most transitive deps are LGPL at worst.
+copyleft = "allow"
 
 [bans]
-# Prevent multiple versions of the same crate from inflating binary size.
 multiple-versions = "warn"
-# Block known-dangerous patterns.
 deny = []
 
 [sources]

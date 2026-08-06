@@ -53,7 +53,6 @@ pub trait SnarkProver: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::wipe::secure_wipe;
 
     /// Ensures the wipe function leaves 0xFF in every byte (final pass).
