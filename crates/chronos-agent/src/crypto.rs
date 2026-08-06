@@ -79,12 +79,18 @@ mod tests {
     use super::*;
     use num_bigint::BigUint;
 
+    /// Test-only salt value — not a production secret.
+    const TEST_SALT_A: [u8; 32] = [0xAB; 32];
+    /// Second test-only salt, distinct from TEST_SALT_A to verify salt sensitivity.
+    const TEST_SALT_B: [u8; 32] = [0xCD; 32];
+    /// Arbitrary test input — chosen to be non-trivial but not a real VDF output.
+    const TEST_Y_VALUE: u32 = 12345;
+
     #[test]
     fn test_hkdf_deterministic() -> ChronosResult<()> {
-        let y = BigUint::from(12345_u32);
-        let salt = [0xABu8; 32];
-        let k1 = derive_k_enc(&y, &salt)?;
-        let k2 = derive_k_enc(&y, &salt)?;
+        let y = BigUint::from(TEST_Y_VALUE);
+        let k1 = derive_k_enc(&y, &TEST_SALT_A)?;
+        let k2 = derive_k_enc(&y, &TEST_SALT_A)?;
         assert_eq!(k1, k2, "HKDF must be deterministic");
         assert_ne!(k1, [0u8; 32], "HKDF output must not be all-zero");
         Ok(())
@@ -92,9 +98,9 @@ mod tests {
 
     #[test]
     fn test_hkdf_different_salt_changes_output() -> ChronosResult<()> {
-        let y = BigUint::from(12345_u32);
-        let k1 = derive_k_enc(&y, &[0xABu8; 32])?;
-        let k2 = derive_k_enc(&y, &[0xCDu8; 32])?;
+        let y = BigUint::from(TEST_Y_VALUE);
+        let k1 = derive_k_enc(&y, &TEST_SALT_A)?;
+        let k2 = derive_k_enc(&y, &TEST_SALT_B)?;
         assert_ne!(k1, k2);
         Ok(())
     }

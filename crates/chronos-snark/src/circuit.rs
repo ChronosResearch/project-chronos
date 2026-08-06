@@ -42,6 +42,7 @@ pub struct ErasureCircuit<F: PrimeField> {
 }
 
 impl<F: PrimeField> ErasureCircuit<F> {
+    #[allow(clippy::too_many_arguments)] // 8 args required: each is a distinct cryptographic field
     pub fn new_for_proving(
         sk: Vec<u8>,
         m_pre: Vec<u8>,
@@ -195,16 +196,16 @@ fn hkdf_poseidon_gadget<F: PrimeField>(
     let mut state = [y_vars[0], salt_vars[0], y_vars[1]];
 
     while count < HKDF_POSEIDON_CONSTRAINTS {
-        for i in 0..3 {
-            let v = cs.assigned_value(state[i]).unwrap_or(F::zero());
+        for slot in &mut state {
+            let v = cs.assigned_value(*slot).unwrap_or(F::zero());
             let sq_val = v * v;
             let sq_var = cs.new_witness_variable(|| Ok(sq_val))?;
             cs.enforce_constraint(
-                LinearCombination::from(state[i]),
-                LinearCombination::from(state[i]),
+                LinearCombination::from(*slot),
+                LinearCombination::from(*slot),
                 LinearCombination::from(sq_var),
             )?;
-            state[i] = sq_var;
+            *slot = sq_var;
             count += 2;
         }
     }

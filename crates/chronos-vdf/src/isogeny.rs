@@ -153,7 +153,7 @@ pub enum VdfBackend {
 
 impl VdfBackend {
     /// Parse from a config string (`"wesolowski"` or `"isogeny"`).
-    pub fn from_str(s: &str) -> ChronosResult<Self> {
+    pub fn parse_backend(s: &str) -> ChronosResult<Self> {
         match s.to_lowercase().as_str() {
             "wesolowski" => Ok(Self::Wesolowski),
             "isogeny" => Ok(Self::Isogeny),
@@ -205,9 +205,9 @@ mod tests {
 
     #[test]
     fn test_vdf_backend_parse() -> ChronosResult<()> {
-        assert_eq!(VdfBackend::from_str("wesolowski")?, VdfBackend::Wesolowski);
-        assert_eq!(VdfBackend::from_str("isogeny")?, VdfBackend::Isogeny);
-        assert!(VdfBackend::from_str("unknown").is_err());
+        assert_eq!(VdfBackend::parse_backend("wesolowski")?, VdfBackend::Wesolowski);
+        assert_eq!(VdfBackend::parse_backend("isogeny")?, VdfBackend::Isogeny);
+        assert!(VdfBackend::parse_backend("unknown").is_err());
         Ok(())
     }
 }
