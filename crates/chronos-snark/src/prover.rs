@@ -7,11 +7,10 @@
 /// slightly, without re-generating the entire 180,000-constraint circuit.
 /// The primary use case is re-attestation when a new drand beacon is received.
 use ark_bn254::{Bn254, Fr};
-use ark_crypto_primitives::snark::{CircuitSpecificSetupSNARK, SNARK};
+use ark_crypto_primitives::snark::SNARK;
 use ark_groth16::{
     prepare_verifying_key, Groth16, PreparedVerifyingKey, Proof, ProvingKey,
 };
-use ark_relations::r1cs::ConstraintSynthesizer;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use chronos_core::{ChronosError, ChronosResult, SnarkProver};
 use num_bigint::BigUint;

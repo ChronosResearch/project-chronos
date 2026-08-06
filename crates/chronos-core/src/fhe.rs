@@ -1,7 +1,7 @@
 use crate::error::{ChronosError, ChronosResult};
 use std::sync::Arc;
 use std::sync::RwLock;
-use tfhe::{generate_keys, set_server_key, ClientKey, ConfigBuilder, ServerKey};
+use tfhe::{generate_keys, set_server_key, ConfigBuilder, ServerKey};
 
 /// Holds the FHE server evaluation key in a `RwLock` so many concurrent
 /// inference requests can read it without contention, while a single writer

@@ -1,25 +1,20 @@
 # cargo-deny configuration for CHRONOS workspace.
 # Run: cargo deny check
+# Schema: cargo-deny >= 0.16 (v2)
 
 [advisories]
-# HALT the build if any crate has a RUSTSEC vulnerability.
-vulnerability = "deny"
-unmaintained  = "none"
-yanked        = "deny"
-
 # Known advisories from transitive deps that are not yet patched upstream.
 # Review each before ignoring — the comment must explain why it's acceptable.
 ignore = [
     # RUSTSEC-2025-0055: tracing-subscriber 0.2.x ANSI escape injection.
-    # We use 0.3.19 which is not affected; this advisory targets 0.2.x in
-    # transitive deps from older axum-extra. Excluded pending upstream fix.
+    # We use 0.3.x which is not affected; advisory targets older transitive dep.
     "RUSTSEC-2025-0055",
     # RUSTSEC-2025-0141: bincode unmaintained (used by tfhe-rs).
     "RUSTSEC-2025-0141",
     # RUSTSEC-2024-0388: derivative unmaintained (used by arkworks).
     "RUSTSEC-2024-0388",
     # RUSTSEC-2024-0437: protobuf 2.x crash via uncontrolled recursion.
-    # Transitive dep from tonic/prost chain in tfhe-rs. Excluded pending upstream bump.
+    # Transitive dep from tonic/prost chain in tfhe-rs. Pending upstream bump.
     "RUSTSEC-2024-0437",
     # RUSTSEC-2024-0436: paste crate unmaintained (used by tfhe-rs macros).
     "RUSTSEC-2024-0436",
@@ -37,12 +32,10 @@ allow = [
     "Unicode-DFS-2016",
     "CC0-1.0",
 ]
-copyleft = "warn"
 
 [bans]
 # Prevent multiple versions of the same crate from inflating binary size.
 multiple-versions = "warn"
-# Block known-dangerous patterns.
 deny = []
 
 [sources]
