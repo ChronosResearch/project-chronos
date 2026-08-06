@@ -58,9 +58,9 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for setup. See [AUDIT.md](AUDIT.md) for the f
 
 ## Roadmap & Future Plans
 
-- **Phase 1 (Current):** Working prototype of the CHRONOS protocol with VDF and SNARK erasure proofs.
-- **Phase 2 (Integration):** Merge with CELLHAWK navigation stack for resilient UAV agents.
-- **Phase 3 (Hardware):** True biological storage integration (DNA-Attest) for cryptographic key storage.
+- **Phase 1 (Current):** Working prototype of the CHRONOS protocol. Core cryptographic primitives (FHE, VDF, SNARK erasure proofs) are functional.
+- **Phase 2 (Autonomy Integration):** Applying this cryptographic security layer to physical autonomous systems (like drones/UAVs) to ensure they can operate safely in contested environments without human oversight.
+- **Phase 3 (Long-Term Storage):** Researching tamper-evident biological storage (e.g., synthetic DNA) to secure cryptographic keys and safety rules for autonomous agents over decades.
 
 ## License
 
