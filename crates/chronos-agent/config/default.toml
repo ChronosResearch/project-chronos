@@ -4,6 +4,7 @@
 [mission]
 t_seconds    = 3600
 t_vdf_steps  = 1_000_000
+mission_id   = "chronos-mission-default"
 
 [crypto]
 rsa_bits     = 2048

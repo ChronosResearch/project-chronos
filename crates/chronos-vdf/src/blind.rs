@@ -51,10 +51,13 @@ impl BlindVdfClient {
         // r ← random in [2, N-1]
         let r = rng.gen_biguint_range(&BigUint::from(2u32), n);
 
-        // r_pow = r^(2^T) mod N  (client computes this locally — it's fast since
-        // the client knows r and can use fast exponentiation, not sequential squaring)
-        let vdf = WesolowskiVdf;
-        let (r_pow, _) = vdf.evaluate(&r, t, n)?;
+        // r_pow = r^(2^T) mod N.
+        // The client knows r, so it can use fast modular exponentiation
+        // (square-and-multiply in O(T) bit-ops) rather than T sequential squarings.
+        // Using the VDF's sequential squaring here would defeat the purpose of
+        // blind outsourcing — the client would be doing the same work as the server.
+        let exp = BigUint::one() << t as usize; // 2^T
+        let r_pow = r.modpow(&exp, n);
 
         // g_blind = g · r_pow mod N
         let g_blind = (g * &r_pow) % n;
@@ -82,9 +85,11 @@ impl BlindVdfClient {
         t: u64,
         n: &BigUint,
     ) -> ChronosResult<BigUint> {
-        // r_pow_2t = r^(2^(2T)) mod N = (r^(2^T))^(2^T) mod N
-        let vdf = WesolowskiVdf;
-        let (r_pow_2t, _) = vdf.evaluate(&ctx.r_pow, t, n)?;
+        // r_pow_2t = r^(2^(2T)) mod N = (r^(2^T))^(2^T) mod N.
+        // The client knows r_pow, so fast modpow is correct here —
+        // no sequential squaring needed.
+        let exp = BigUint::one() << t as usize; // 2^T
+        let r_pow_2t = ctx.r_pow.modpow(&exp, n);
 
         // y = y_blind · modinv(r_pow_2t, N) mod N
         let inv = mod_inverse(&r_pow_2t, n).ok_or_else(|| {

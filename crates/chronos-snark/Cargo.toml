@@ -16,3 +16,4 @@ ark-serialize         = { workspace = true }
 num-bigint            = { workspace = true }
 thiserror             = { workspace = true }
 rand                  = { workspace = true }
+sha2                  = { workspace = true }

@@ -89,11 +89,11 @@ fn check_file_permissions(path: &str) -> ChronosResult<()> {
 /// Maintains a fixed-size window of recently seen nonces.  Any nonce seen
 /// within the window is rejected as a replay.
 ///
-/// # Window size
-/// 1024 nonces × 12 bytes each = 12 KB memory.  At 100 req/s this covers
-/// ~10 seconds of replay protection.
+/// Uses a `HashSet` for O(1) lookup and a `VecDeque` to track insertion order
+/// for eviction. At 1024 capacity × 12 bytes = 12 KB memory.
 pub struct NonceCache {
-    window: std::collections::VecDeque<[u8; 12]>,
+    seen: std::collections::HashSet<[u8; 12]>,
+    order: std::collections::VecDeque<[u8; 12]>,
     capacity: usize,
 }
 
@@ -101,7 +101,8 @@ impl NonceCache {
     /// Create a new nonce cache with the given capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
-            window: std::collections::VecDeque::with_capacity(capacity),
+            seen: std::collections::HashSet::with_capacity(capacity),
+            order: std::collections::VecDeque::with_capacity(capacity),
             capacity,
         }
     }
@@ -111,13 +112,16 @@ impl NonceCache {
     /// Returns `true` if the nonce is fresh (not a replay), `false` if it
     /// has been seen before.
     pub fn check_and_insert(&mut self, nonce: &[u8; 12]) -> bool {
-        if self.window.contains(nonce) {
+        if self.seen.contains(nonce) {
             return false; // Replay detected.
         }
-        if self.window.len() >= self.capacity {
-            self.window.pop_front();
+        if self.order.len() >= self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
         }
-        self.window.push_back(*nonce);
+        self.seen.insert(*nonce);
+        self.order.push_back(*nonce);
         true
     }
 }

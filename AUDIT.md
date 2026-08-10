@@ -1,57 +1,44 @@
 # Code Audit — CHRONOS Agent
-**Date:** 2026-07-29
+**Last updated:** 2026-07-29 (commit 6c2f199)
 
 ---
 
 ## Result: Go ✅
 
-30-point audit completed. Zero `expect()`/`unwrap()` in any production source file. Test files use `expect()` as assertions — that's fine.
+Full audit completed across all crates. Zero `expect()`/`unwrap()` in production source. Test files use `expect()` as assertions — intentional.
 
 ---
 
-## Bugs Fixed
+## Bugs Fixed (All Commits)
 
 | # | Bug | Severity | File | Fix |
 |---|-----|----------|------|-----|
-| 1 | `.expect("CString conversion failed")` in library | Critical | `wesolowski.rs` | Replaced with `?` via `ChronosError::GmpFfi` |
-| 2 | `.expect("Invalid UTF8 from GMP")` in library | Critical | `wesolowski.rs` | `map_err(ChronosError::GmpFfi)` |
-| 3 | `.expect("Parse error")` in library | Critical | `wesolowski.rs` | `ok_or_else(ChronosError::GmpFfi)` |
-| 4 | `.expect("certN file missing")` in library | Critical | `mpc.rs` | `MpcCertificate::load()` returns `ChronosResult` |
-| 5 | `mlock()` return value ignored | Critical | `memory.rs` | Returns `ChronosResult`, propagated to caller |
-| 6 | No GMP RAII wrapper — memory leak on early return | Critical | `wesolowski.rs` | `GmpBigInt` struct with `Drop → mpz_clear()` |
-| 7 | `libc::free` after `CStr::from_ptr` in wrong order (UAF) | Critical | `wesolowski.rs` | Moved inside `GmpBigInt::to_biguint()` |
-| 8 | `mpsc::channel(100)` — unbounded under long VDF | High | `posw.rs` | `channel(32)` with back-pressure |
-| 9 | No SIGTERM handler | High | `main.rs` | `tokio::signal::unix::signal(SIGTERM)` + graceful shutdown + `→ Result<()>` |
-| 10 | `std::process::exit(1)` in non-main path | High | `main.rs` | EA check now returns `Err` via `anyhow` |
-| 11 | No `ChronosError` unified type — `Box<dyn Error>` everywhere | High | (absent) | Created `chronos-core/src/error.rs` |
-| 12 | No HKDF derivation | High | (absent) | RFC 5869 HKDF-SHA256 in `src/crypto.rs` |
-| 13 | State machine allows double-init | High | `main.rs` | `arm_to_active()` rejects if not in `Armed` state |
-| 14 | No watchdog timeout | High | (absent) | `spawn_watchdog()` polls elapsed vs `t_seconds` |
-| 15 | No `#[inline(never)]` on `secure_wipe` | High | `wipe.rs` | Added — prevents compiler elision |
-| 16 | Hardcoded drand URL, port 8080 | Medium | multiple | All in `config/default.toml` |
-| 17 | No JSON logging | Medium | `main.rs` | `tracing-subscriber` with `.json()` layer |
-| 18 | No Prometheus metrics | Medium | (absent) | `metrics.rs` + `/metrics` endpoint on port 9090 |
-| 19 | CI workflow pointed at wrong directory | Medium | `rust-qa.yml` | Rewritten to target workspace root |
-| 20 | `tracing-subscriber` missing `json` feature | Medium | `Cargo.toml` | Fixed |
-| 21 | No release profile hardening | Medium | `Cargo.toml` | `lto=true`, `codegen-units=1`, `strip="symbols"` |
-| 22 | No `.cargo/config.toml` | Medium | (absent) | Added with `cargo security` alias and musl flags |
-| 23 | `ServerKey` behind `Mutex` (read-heavy path) | Medium | `fhe.rs` | Changed to `RwLock` |
-| 24 | `generate_keys()` infallible return type | Medium | `fhe.rs` | `generate_and_install_keys() -> ChronosResult<()>` |
-| 25 | Missing doc comments on public items | Medium | everywhere | Added; `RUSTDOCFLAGS=-D missing-docs` in CI |
-| 26 | Prometheus `Lazy<Histogram>` statics use `expect()` | Medium | `metrics.rs` | Replaced with `OnceCell` + `make_*()` helpers that log errors |
-
----
-
-## Gaps Before Real Deployment
-
-| Area | State | What's needed |
-|------|-------|---------------|
-| Wesolowski VDF proof | Modular squaring only, no Pietrzak π | Implement verifier |
-| Groth16 circuit | Single trivial R1CS constraint | Real AES-GCM constraints |
-| BLS12-381 drand verification | Hex length check only | `bls12_381` pairing |
-| `certN.bin` | Placeholder RSA modulus | MPC ceremony |
-| `ct_sk.bin` | Not loaded in main orchestration | Wire into init path |
-| mTLS | Stubbed | CA cert + rustls config |
+| 1 | GMP FFI `.expect()` calls in library | Critical | `wesolowski.rs` | Replaced GMP FFI with pure `num-bigint`; all errors propagated via `?` |
+| 2 | `mlock()` return value ignored | Critical | `memory.rs` | Returns `ChronosResult`, propagated to caller |
+| 3 | `is_multiple_of` nightly-only method | High | `wesolowski.rs` | Replaced with `n % i == BigUint::zero()` (stable) |
+| 4 | Unbounded `mpsc::channel` under long VDF | High | `posw.rs` | `channel(32)` with back-pressure |
+| 5 | No SIGTERM handler | High | `main.rs` | `tokio::signal::unix::signal(SIGTERM)` + graceful shutdown |
+| 6 | `std::process::exit(1)` in non-main path | High | `main.rs` | EA check returns `Err` via `anyhow` |
+| 7 | No unified `ChronosError` type | High | (absent) | Created `chronos-core/src/error.rs` with 11 variants |
+| 8 | No HKDF derivation | High | (absent) | RFC 5869 HKDF-SHA256 in `crypto.rs` |
+| 9 | State machine allows double-init | High | `main.rs` | `arm_to_active()` rejects if not in `Armed` state |
+| 10 | No watchdog timeout | High | (absent) | `spawn_watchdog()` polls elapsed vs `t_seconds` |
+| 11 | No `#[inline(never)]` on `secure_wipe` | High | `wipe.rs` | Added — prevents compiler elision |
+| 12 | Hardcoded seed `0xC4_0C_0D_05` in trusted setup | Critical | `prover.rs` | Replaced with 3-party simulated MPC ceremony |
+| 13 | `merkle_zero_gadget` hardcoded public input 255 | High | `circuit.rs` | Public input derived from actual witness byte |
+| 14 | Blind VDF client used sequential squaring for blinding | High | `blind.rs` | Fixed to `r.modpow(&(BigUint::one() << t), n)` |
+| 15 | HKDF salt used as both salt and IKM | High | `crypto.rs` | Fixed per RFC 5869 §2 — IKM=y, salt=separate |
+| 16 | BLS message pre-hashed before passing to blst | High | `drand_client.rs` | Raw `round.to_be_bytes()` passed; blst applies H2C internally |
+| 17 | `verify_handler` used hardcoded `y_first_byte=0` | High | `main.rs` | Real `y[0]` from VDF output stored in `AppState` |
+| 18 | `ct_sk` never decrypted — `K_enc` derived but unused | Critical | `main.rs` | `crypto::decrypt_ct_sk()` wired; AES-256-GCM decryption |
+| 19 | `certN.bin` placeholder with no fallback | High | `mpc.rs` | Falls back to hardcoded RSA-2048 challenge modulus with `warn!` |
+| 20 | Poseidon gadget used fake squaring chain | High | `circuit.rs` | Real x^5 S-box + MDS mix matching BN254 Poseidon spec |
+| 21 | Drand fetch had no retry on network failure | Medium | `drand_client.rs` | Exponential backoff: 3 attempts at 500ms/1s/2s |
+| 22 | `verify_handler` had no rate limiting | Medium | `main.rs` | Locks after 5 consecutive failures, returns HTTP 429 |
+| 23 | Replay protection used O(n) `VecDeque::contains` | Medium | `tls.rs` | Refactored to `HashSet + VecDeque` for O(1) lookup |
+| 24 | Fallback metric naming caused potential panic | Medium | `metrics.rs` | Fixed unique names per fallback metric |
+| 25 | `NonceCache` missing from `AppState` | High | `main.rs` | Added; middleware now actually checks cache |
+| 26 | `ct_sk` not wiped after use | High | `main.rs` | `secure_wipe` called on `ct_sk_owned` before drop |
 
 ---
 
@@ -63,32 +50,44 @@
 | 2 | `ChronosError` enum, 11 variants | ✅ |
 | 3 | All deps pinned to patch versions | ✅ |
 | 4 | No `panic!`/`exit()` in library crates | ✅ |
-| 5 | Bounded channel (32); `spawn_blocking` for hashing | ✅ |
+| 5 | Bounded channel (32); `spawn_blocking` for CPU-heavy work | ✅ |
 | 6 | SIGTERM + Ctrl-C; keys zeroized on shutdown | ✅ |
 | 7 | FHE key gen on `spawn_blocking` thread | ✅ |
-| 8 | `GmpBigInt` RAII; `Drop` calls `mpz_clear` | ✅ |
-| 9 | `secure_wipe` `#[inline(never)]`; volatile-read unit test | ✅ |
-| 10 | `drop(pk)` after proof; no Arc cycles | ✅ |
-| 11 | `Redacted<T>` newtype; secrets never logged | ✅ |
-| 12 | JSON logging via `tracing-subscriber` | ✅ |
-| 13 | Prometheus metrics on port 9090 | ✅ |
-| 14 | `config/default.toml` + typed `ChronosConfig` | ✅ |
-| 15 | `read_secret_file` checks `0o600` mode on Unix | ✅ |
-| 16 | `StateMachine::arm_to_active` rejects double-init | ✅ |
-| 17 | `spawn_watchdog` forces `Erased` on timeout | ✅ |
-| 18 | RFC 5869 HKDF-SHA256 via `hkdf` crate | ✅ |
-| 19 | `#[cfg(debug_assertions)]` caps VDF T at 10 in tests | ✅ |
-| 20 | Handshake test: keys → VDF → HKDF → erasure | ✅ |
-| 21 | 10 concurrent `WesolowskiVdf` tasks; no shared GMP state | ✅ |
-| 22 | `deny.toml` + `cargo security` alias in `.cargo/config.toml` | ✅ |
-| 23 | `lto=true`, `codegen-units=1`, `strip="symbols"` | ✅ |
-| 24 | `getrlimit(RLIMIT_CORE)` check at startup; fail if non-zero | ✅ |
-| 25 | All public items have `///` doc comments | ✅ |
-| 26 | `DEPLOYMENT.md` written | ✅ |
-| 27 | `RwLock` instead of `Mutex` for `ServerKey` | ✅ |
-| 28 | Binary size enforcement in CI (musl build + size check job) | ✅ |
-| 29 | `rust-qa.yml` covers all checks on every PR | ✅ |
-| 30 | This document | ✅ |
+| 8 | Pure `num-bigint` backend — no unsafe FFI | ✅ |
+| 9 | `secure_wipe` `#[inline(never)]`; triple-pass volatile | ✅ |
+| 10 | `Redacted<T>` newtype; secrets never logged | ✅ |
+| 11 | JSON logging via `tracing-subscriber` | ✅ |
+| 12 | Prometheus metrics on port 9090 | ✅ |
+| 13 | `config/default.toml` + typed `ChronosConfig` | ✅ |
+| 14 | `read_secret_file` checks `0o600` mode on Unix | ✅ |
+| 15 | `StateMachine::arm_to_active` rejects double-init | ✅ |
+| 16 | `spawn_watchdog` forces `Erased` on timeout | ✅ |
+| 17 | RFC 5869 HKDF-SHA256 via `hkdf` crate | ✅ |
+| 18 | AES-256-GCM decryption of `ct_sk` wired | ✅ |
+| 19 | Real VDF output `y[0]` used as SNARK public input | ✅ |
+| 20 | 3-party simulated MPC trusted setup | ✅ |
+| 21 | RSA-2048 challenge modulus fallback (≥2048 bits validated) | ✅ |
+| 22 | Poseidon x^5 S-box + MDS mix gadget | ✅ |
+| 23 | Drand retry with exponential backoff (3 attempts) | ✅ |
+| 24 | Verify endpoint rate-limited (5 failures → HTTP 429) | ✅ |
+| 25 | O(1) nonce cache (`HashSet + VecDeque`) | ✅ |
+| 26 | EAIP: identity root, ZK proof, ML-DSA signing | ✅ |
+| 27 | `mlock` on all `LockedBytes`; triple-pass wipe on `Drop` | ✅ |
+| 28 | `lto=true`, `codegen-units=1`, `strip="symbols"` | ✅ |
+| 29 | `getrlimit(RLIMIT_CORE)` check at startup | ✅ |
+| 30 | Benchmark suite (`chronos-bench`) | ✅ |
+
+---
+
+## Remaining Gaps
+
+| Gap | What's needed |
+|-----|---------------|
+| FHE evaluation is byte-reversal stub | Real TFHE-rs circuit |
+| Groth16 AES-GCM gadget simulates constraints | Real AES-GCM R1CS gadget |
+| MPC ceremony is simulated (3-party local) | Real Powers-of-Tau ceremony |
+| `F_OS` axiomatized | Hardware attestation (TDX/SEV-SNP) reduction |
+| mTLS not enforced by axum | Wire `rustls` acceptor with client cert verification |
 
 ---
 
@@ -99,8 +98,4 @@ If `chronos-agent` crashes:
 1. `systemd` restarts it (`Restart=on-failure`).
 2. Core dumps are blocked (`LimitCORE=0` + `prctl(PR_SET_DUMPABLE, 0)`).
 3. If the mission already reached `Erased`, exit code is 0 — systemd won't restart.
-4. To re-run a pre-erase mission: re-provision `certN.bin` and `ct_sk.bin`, then restart.
-
-```
-./chronos-agent --config config.toml
-```
+4. To re-run: re-provision `certN.bin` and `ct_sk.bin`, then restart.

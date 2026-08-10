@@ -38,6 +38,10 @@ rand       = { workspace = true }
 blst = { workspace = true }
 hex  = { workspace = true }
 
+# Post-quantum signatures (NIST ML-DSA / Dilithium3)
+pqcrypto-dilithium = { workspace = true }
+pqcrypto-traits    = { workspace = true }
+
 # Serialization
 serde      = { workspace = true }
 serde_json = { workspace = true }

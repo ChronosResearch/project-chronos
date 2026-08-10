@@ -1,3 +1,4 @@
+use crate::identity::IdentityManager;
 use chronos_core::{ChronosError, ChronosResult};
 use serde::Serialize;
 use std::sync::Arc;
@@ -29,6 +30,8 @@ pub struct StateMachine {
     pub erased_notify: Arc<Notify>,
     /// Mission start time — set on first `Armed -> Active` transition.
     start_time: Mutex<Option<Instant>>,
+    /// EAIP identity manager — initialized in Active, wiped in Erased.
+    pub identity: Mutex<IdentityManager>,
 }
 
 impl StateMachine {
@@ -38,6 +41,7 @@ impl StateMachine {
             state: Mutex::new(AgentState::Armed),
             erased_notify: Arc::new(Notify::new()),
             start_time: Mutex::new(None),
+            identity: Mutex::new(IdentityManager::new()),
         })
     }
 
@@ -84,6 +88,8 @@ impl StateMachine {
         let mut guard = self.state.lock().await;
         *guard = AgentState::Erased;
         info!(target: "chronos", "State → Erased");
+        // Wipe EAIP identity material on erasure.
+        self.identity.lock().await.wipe();
         self.erased_notify.notify_waiters();
     }
 

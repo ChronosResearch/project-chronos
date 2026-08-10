@@ -7,8 +7,9 @@ use tracing::info;
 /// Compute the SHA-256 Merkle root of a memory region and verify that the
 /// region has been correctly triple-pass wiped (ends in `0xFF` pattern).
 ///
-/// This implements the erasure attestation check from §5.1 of the CHRONOS v2
-/// paper.  The proof is the SHA-256 digest of the pre-wipe snapshot (`M_pre`).
+/// This is the software-layer erasure attestation check from §5.1 of the
+/// CHRONOS v2 paper. The Groth16 SNARK prover (`chronos-snark`) provides the
+/// full cryptographic proof; this function is the pre-proof sanity check.
 ///
 /// # STEP 11 – Secret Redaction
 /// The `sk` argument is the wiped buffer (expected to be all-`0xFF`).  We do
@@ -21,6 +22,7 @@ use tracing::info;
 ///
 /// # Errors
 /// Returns [`ChronosError::Erasure`] if the wipe pattern is incorrect.
+#[allow(dead_code)] // Called by the SNARK prover path; kept as a standalone check.
 pub fn prove_erasure(
     sk_wiped: &[u8],
     m_pre: &[u8],

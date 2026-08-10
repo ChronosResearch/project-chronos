@@ -74,8 +74,10 @@ impl FheEngine {
             ));
         }
 
-        // Placeholder for real concrete-ML circuit evaluation.
+        // STUB: placeholder for real Concrete-ML / TFHE-rs circuit evaluation.
         // In production, replace with the FHE circuit call over `ct`.
+        // The byte-reversal here is a development stand-in only and provides
+        // NO cryptographic security — it is not homomorphic evaluation.
         let mut output = ct.to_vec();
         output.reverse();
         Ok(output)

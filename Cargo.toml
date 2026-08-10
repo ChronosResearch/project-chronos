@@ -36,6 +36,10 @@ tracing            = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 clap               = { version = "4.5.40", features = ["derive"] }
 
+# ── Post-Quantum signatures (NIST ML-DSA / Dilithium3) ──────────────────────
+pqcrypto-dilithium = { version = "0.5.0" }
+pqcrypto-traits    = "0.3.5"
+
 # ── Crypto utilities ──────────────────────────────────────────────────────────
 zeroize    = { version = "1.8.1", features = ["derive"] }
 sha2       = "0.10.9"

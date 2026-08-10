@@ -1,3 +1,4 @@
+use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use chronos_core::{ChronosError, ChronosResult};
 use hkdf::Hkdf;
 use num_bigint::BigUint;
@@ -58,13 +59,10 @@ pub async fn read_secret_file<P: AsRef<Path>>(path: P) -> ChronosResult<Vec<u8>>
 /// Returns [`ChronosError::Fhe`] if HKDF output expansion fails (only if
 /// `output_len > 255 * hash_len`, which cannot happen for 32-byte output).
 pub fn derive_k_enc(y: &BigUint, salt: &[u8]) -> ChronosResult<[u8; 32]> {
-    let y_bytes = y.to_bytes_be();
+    let ikm = y.to_bytes_be();
 
-    // IKM = y || salt
-    let mut ikm = Vec::with_capacity(y_bytes.len() + salt.len());
-    ikm.extend_from_slice(&y_bytes);
-    ikm.extend_from_slice(salt);
-
+    // RFC 5869 §2: IKM = y (the VDF output); salt is a separate parameter.
+    // Using salt in both positions would weaken domain separation.
     let hk = Hkdf::<Sha256>::new(Some(salt), &ikm);
     let mut okm = [0u8; 32];
     hk.expand(b"chronos-kenc-v1", &mut okm).map_err(|e| {
@@ -72,6 +70,47 @@ pub fn derive_k_enc(y: &BigUint, salt: &[u8]) -> ChronosResult<[u8; 32]> {
     })?;
 
     Ok(okm)
+}
+
+// ─── AES-GCM-256 Decryption ──────────────────────────────────────────────────
+
+/// Decrypt `ct_sk` using `K_enc` via AES-256-GCM.
+///
+/// Expected ciphertext layout: `nonce (12 bytes) || ciphertext+tag`.
+/// The tag (16 bytes) is appended by the AES-GCM crate automatically.
+///
+/// # Errors
+/// Returns [`ChronosError::Erasure`] on authentication failure or malformed input.
+pub fn decrypt_ct_sk(k_enc: &[u8; 32], ct_sk: &[u8]) -> ChronosResult<Vec<u8>> {
+    if ct_sk.len() < 12 + 16 {
+        return Err(ChronosError::Erasure(
+            "ct_sk too short: need at least 28 bytes (12 nonce + 16 tag)".into(),
+        ));
+    }
+    let key = Key::<Aes256Gcm>::from_slice(k_enc);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(&ct_sk[..12]);
+    cipher
+        .decrypt(nonce, &ct_sk[12..])
+        .map_err(|_| ChronosError::Erasure("AES-GCM decryption failed — wrong key or corrupted ciphertext".into()))
+}
+
+/// Encrypt `plaintext` under `K_enc` via AES-256-GCM with a random nonce.
+///
+/// Returns `nonce (12 bytes) || ciphertext+tag`.
+///
+/// Used in tests and tooling to produce valid `ct_sk.bin` files.
+#[cfg(test)]
+pub fn encrypt_for_test(k_enc: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
+    use rand::RngCore;
+    let key = Key::<Aes256Gcm>::from_slice(k_enc);
+    let cipher = Aes256Gcm::new(key);
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let mut out = nonce_bytes.to_vec();
+    out.extend(cipher.encrypt(nonce, plaintext).expect("encrypt must not fail in tests"));
+    out
 }
 
 #[cfg(test)]
@@ -103,5 +142,32 @@ mod tests {
         let k2 = derive_k_enc(&y, &TEST_SALT_B)?;
         assert_ne!(k1, k2);
         Ok(())
+    }
+
+    #[test]
+    fn test_aes_gcm_roundtrip() -> ChronosResult<()> {
+        let y = BigUint::from(TEST_Y_VALUE);
+        let k_enc = derive_k_enc(&y, &TEST_SALT_A)?;
+        let plaintext = b"chronos-secret-key-32-bytes-here";
+        let ct = encrypt_for_test(&k_enc, plaintext);
+        let recovered = decrypt_ct_sk(&k_enc, &ct)?;
+        assert_eq!(recovered, plaintext);
+        Ok(())
+    }
+
+    #[test]
+    fn test_aes_gcm_wrong_key_rejected() -> ChronosResult<()> {
+        let y = BigUint::from(TEST_Y_VALUE);
+        let k_enc = derive_k_enc(&y, &TEST_SALT_A)?;
+        let ct = encrypt_for_test(&k_enc, b"secret");
+        let wrong_key = derive_k_enc(&y, &TEST_SALT_B)?;
+        assert!(decrypt_ct_sk(&wrong_key, &ct).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_aes_gcm_too_short_rejected() {
+        let k_enc = [0u8; 32];
+        assert!(decrypt_ct_sk(&k_enc, &[0u8; 10]).is_err());
     }
 }

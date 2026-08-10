@@ -37,6 +37,13 @@ pub struct MissionConfig {
     pub t_seconds: u64,
     /// Number of VDF squaring steps.
     pub t_vdf_steps: u64,
+    /// Human-readable mission identifier (used in EAIP identity root).
+    #[serde(default = "default_mission_id")]
+    pub mission_id: String,
+}
+
+fn default_mission_id() -> String {
+    "chronos-mission-default".to_string()
 }
 
 /// Cryptographic configuration.

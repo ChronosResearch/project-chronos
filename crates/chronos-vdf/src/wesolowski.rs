@@ -131,6 +131,30 @@ impl VdfEngine for WesolowskiVdf {
     }
 }
 
+/// Generate a time-locked identity root `R = SHA-256(g^(2^T) mod N)`.
+///
+/// The identity root is cryptographically bound to the mission duration `T`:
+/// it cannot be computed faster than T sequential squarings without knowing
+/// the factorization of `N` (which comes from the MPC ceremony).
+///
+/// # Errors
+/// Returns [`ChronosError::Vdf`] if VDF evaluation fails.
+pub fn generate_identity_root(
+    g: &BigUint,
+    t: u64,
+    n: &BigUint,
+) -> ChronosResult<[u8; 32]> {
+    let vdf = WesolowskiVdf;
+    let (y, _proof) = vdf.evaluate(g, t, n)?;
+    let y_bytes = y.to_bytes_be();
+    let mut hasher = Sha256::new();
+    hasher.update(&y_bytes);
+    let digest = hasher.finalize();
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&digest);
+    Ok(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

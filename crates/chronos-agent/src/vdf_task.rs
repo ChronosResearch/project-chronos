@@ -3,10 +3,14 @@ use chronos_vdf::wesolowski::WesolowskiVdf;
 use num_bigint::BigUint;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
+
+use crate::metrics;
 
 /// Progress messages from the VDF background task.
 #[derive(Debug)]
+#[allow(dead_code)] // Used when vdf_task is wired into the orchestrator.
 pub enum VdfProgress {
     /// VDF computation has started.
     Started,
@@ -17,16 +21,16 @@ pub enum VdfProgress {
 /// Spawn a VDF computation task.
 ///
 /// # STEP 21 – Concurrency safety
-/// [`WesolowskiVdf::evaluate`] creates its own [`GmpBigInt`] locals on each
-/// call.  There is no shared mutable GMP state — each task gets an independent
+/// [`WesolowskiVdf::evaluate`] creates its own locals on each call.
+/// There is no shared mutable state — each task gets an independent
 /// `WesolowskiVdf` instance, so 10 tasks running simultaneously is safe.
 ///
 /// # STEP 5 – The blocking computation runs inside `tokio::task::spawn_blocking`
 /// so the async executor is never starved.
 ///
-/// # STEP 6 – `abort_signal` is checked once before starting; the PoSW engine
-/// checks it every 1000 iterations.  Callers set it to `true` on SIGTERM or
-/// watchdog timeout.
+/// # STEP 6 – `abort_signal` is checked once before starting.
+/// Callers set it to `true` on SIGTERM or watchdog timeout.
+#[allow(dead_code)] // Available for callers that want async VDF progress reporting.
 pub async fn spawn_vdf_task(
     g: BigUint,
     t: u64,
@@ -47,8 +51,15 @@ pub async fn spawn_vdf_task(
             if abort_signal.load(Ordering::Relaxed) {
                 return Err(ChronosError::Vdf("Aborted before start".into()));
             }
-            let engine = WesolowskiVdf; // STEP 21: fresh per-closure instance
-            engine.evaluate(&g, t, &n)
+            let engine = WesolowskiVdf;
+            let start = Instant::now();
+            let res = engine.evaluate(&g, t, &n);
+            // Report squarings/sec to Prometheus.
+            let elapsed = start.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                metrics::vdf_squarings_per_sec().set(t as f64 / elapsed);
+            }
+            res
         })
         .await
         .map_err(|join_err| {

@@ -1,0 +1,16 @@
+[package]
+name = "chronos-bench"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "chronos-bench"
+path = "src/main.rs"
+
+[dependencies]
+chronos-core  = { path = "../chronos-core" }
+chronos-vdf   = { path = "../chronos-vdf" }
+chronos-snark = { path = "../chronos-snark" }
+
+num-bigint = { workspace = true }
+sha2       = { workspace = true }
