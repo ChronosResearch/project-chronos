@@ -58,11 +58,33 @@ cargo test
 
 ## Benchmarks
 
-```bash
-cargo run -p chronos-bench --release
-```
+Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (release build):
 
-Outputs VDF timing (T=1k/10k/100k), Groth16 setup/prove/verify latency, and mlock allocation cost.
+**VDF — Wesolowski over RSA-2048**
+
+| T (steps) | Wall time | Squarings/sec |
+|-----------|-----------|---------------|
+| 1,000 | 12 s | 83 |
+| 10,000 | 16 s | 603 |
+| 100,000 | 9.8 s | 10,174 |
+
+**Groth16 Erasure Proof — BN254 (~180k constraints)**
+
+| Operation | Time |
+|-----------|------|
+| MPC trusted setup | 3.2 s |
+| Proof generation | 1.6 s |
+| Proof verification | 4 ms |
+| Proof size | 128 bytes |
+
+**LockedBytes — mlock overhead**
+
+| Size | Alloc time | mlock |
+|------|-----------|-------|
+| 32 B | 19 µs | ✅ |
+| 4 KB | 13 µs | ✅ |
+| 64 KB | 121 µs | ✅ |
+| Triple-pass wipe (32 B) | 1 µs | — |
 
 ## Gaps
 
