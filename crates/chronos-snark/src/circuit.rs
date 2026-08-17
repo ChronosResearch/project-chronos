@@ -1,33 +1,72 @@
-/// Full Groth16 erasure circuit — ~180,000 R1CS constraints.
+/// CHRONOS erasure circuit — real constraints only.
 ///
-/// Encodes the following sub-gadgets per §3.3 of the CHRONOS v2 paper:
+/// # What this circuit proves
 ///
-/// | Gadget                              | ~Constraints |
-/// |-------------------------------------|-------------|
-/// | Wesolowski VDF verification         | 70,000      |
-/// | HKDF via Poseidon sponge            | 20,000      |
-/// | AES-GCM key schedule + decryption   | 60,000      |
-/// | Merkle root zeroization check       | 30,000      |
-/// | Total                               | ~180,000    |
+/// | Property | Status |
+/// |----------|--------|
+/// | Every byte of the wiped key buffer equals the declared wipe pattern | **enforced** (32 constraints) |
+/// | The prover's VDF output byte `y[0]` matches the verifier's claimed value | **enforced** (1 constraint) |
+/// | A Poseidon x^5 sponge was evaluated over `(y, salt)` | **enforced** (~650 constraints) |
+/// | `ct_sk` decrypts under `K_enc` to `sk` | **not enforced** — see below |
+/// | The pre-wipe buffer `m_pre` matches a verifier-held commitment | **not enforced** — see below |
+///
+/// # History
+///
+/// Earlier revisions declared ~180,000 constraints across four gadgets. Three of
+/// those four were `while count < TARGET` loops emitting filler multiplications
+/// to reach a hardcoded count; they encoded neither VDF verification, nor
+/// AES-GCM, nor SHA-256. The AES gadget terminated in `sk[0] * 1 = sk[0]`, a
+/// tautology, and the Merkle gadget derived its "expected wipe pattern" public
+/// input *from the witness it was supposed to check*, so it compared `sk[0]`
+/// against itself.
+///
+/// Net effect: ~180,000 constraints binding a single byte. The filler is removed
+/// here. What remains is roughly 700 constraints that bind all 32 bytes.
+/// Smaller, faster to prove, and sound for what it claims.
+///
+/// # Known gaps (deliberately unencoded rather than simulated)
+///
+/// **AES-GCM decryption.** Proving `ct_sk` decrypts to `sk` requires an AES
+/// gadget. AES is bit-oriented and costs tens of thousands of R1CS constraints,
+/// which is why the previous revision faked it. The correct fix is not to write
+/// an AES gadget but to replace AES-256-GCM with a SNARK-friendly authenticated
+/// encryption scheme built on the Poseidon permutation already implemented
+/// below — a few hundred real constraints instead of 60,000. That is a protocol
+/// change and is tracked separately.
+///
+/// **Erasure soundness.** The prover supplies `sk` as a witness, so it can
+/// submit an all-`0xFF` buffer while retaining the real key elsewhere. This
+/// circuit proves *a* buffer was zeroized, not that *the* key was. Closing that
+/// requires a commitment to pre-wipe memory that the verifier holds
+/// independently and the agent cannot forge. No circuit alone can fix it.
 use ark_ff::PrimeField;
 use ark_relations::r1cs::{
     ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 use ark_std::vec::Vec;
 
-// ─── Sub-gadget constraint counts ────────────────────────────────────────────
+/// Declared wipe pattern. The triple-pass wipe is `0xFF -> 0x00 -> 0xFF`, so the
+/// final resting state of an erased buffer is `0xFF`.
+pub const WIPE_PATTERN: u8 = 0xFF;
 
-const VDF_VERIFY_CONSTRAINTS: usize = 70_000;
-const HKDF_POSEIDON_CONSTRAINTS: usize = 20_000;
-const AES_GCM_CONSTRAINTS: usize = 60_000;
-const MERKLE_ZERO_CONSTRAINTS: usize = 30_000;
+/// Length of the key buffer under attestation, in bytes.
+const SK_LEN: usize = 32;
+
+/// Poseidon permutations run over `(y, salt)`. Standard BN254 parameters:
+/// 8 full + 57 partial rounds, 308 constraints per permutation.
+const POSEIDON_PERMUTATIONS: usize = 2;
 
 // ─── Circuit definition ───────────────────────────────────────────────────────
 
-/// Full CHRONOS erasure circuit.
+/// CHRONOS erasure circuit.
 ///
 /// All witness fields are `Option<_>`: `None` during trusted setup,
 /// `Some(_)` during proof generation.
+///
+/// Public inputs, in allocation order — this order is part of the verifier ABI
+/// and must match [`crate::prover::Groth16Prover::verify_erasure`]:
+/// 1. `y[0]` — first byte of the VDF output
+/// 2. [`WIPE_PATTERN`] — declared post-wipe byte value
 #[derive(Clone)]
 pub struct ErasureCircuit<F: PrimeField> {
     pub sk: Option<Vec<u8>>,
@@ -83,29 +122,26 @@ impl<F: PrimeField> ErasureCircuit<F> {
 
 impl<F: PrimeField> ConstraintSynthesizer<F> for ErasureCircuit<F> {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
-        // ── Gadget 1: Wesolowski VDF verification (~70,000 constraints) ──────
-        let y_vars = vdf_verify_gadget::<F>(&cs, &self.y, &self.g, &self.n_modulus, &self.pi_vdf)?;
+        // Public input 1: bind the prover's y[0] to the verifier's claimed value.
+        bind_vdf_output_gadget::<F>(&cs, &self.y)?;
 
-        // ── Gadget 2: HKDF-Poseidon (~20,000 constraints) ────────────────────
-        let k_enc_vars = hkdf_poseidon_gadget::<F>(&cs, &self.y, &self.salt)?;
+        // Poseidon sponge over (y, salt). Real constraints; derives K_enc.
+        let _k_enc = hkdf_poseidon_gadget::<F>(&cs, &self.y, &self.salt)?;
 
-        // ── Gadget 3: AES-GCM decryption (~60,000 constraints) ───────────────
-        aes_gcm_gadget::<F>(&cs, &k_enc_vars, &self.ct_sk, &self.sk)?;
+        // Public input 2: prove every byte of the wiped buffer is WIPE_PATTERN.
+        zeroization_gadget::<F>(&cs, &self.sk)?;
 
-        // ── Gadget 4: Merkle root zeroization check (~30,000 constraints) ────
-        merkle_zero_gadget::<F>(&cs, &self.m_pre, &self.sk)?;
-
-        // Suppress unused variable warning.
-        let _ = y_vars;
-
+        // `m_pre`, `ct_sk`, `g`, `n_modulus` and `pi_vdf` are part of the witness
+        // struct but are not currently constrained. They are deliberately left
+        // unallocated rather than fed into filler constraints — see the module
+        // docs for why, and what would be required to bind them.
         Ok(())
     }
 }
 
-// ─── Helper: allocate witness variables ──────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Allocate `len` bytes as private witness variables.
-/// Returns the allocated `Variable` handles.
 fn alloc_witnesses<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
     data: &Option<Vec<u8>>,
@@ -120,78 +156,53 @@ fn alloc_witnesses<F: PrimeField>(
     Ok(vars)
 }
 
-/// Allocate a single public input variable.
-fn alloc_input<F: PrimeField>(
+/// Enforce `a * 1 = b`.
+fn enforce_eq<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
-    data: &Option<Vec<u8>>,
-    idx: usize,
-) -> Result<Variable, SynthesisError> {
-    let val = data.as_ref().and_then(|b| b.get(idx)).copied().unwrap_or(0);
-    cs.new_input_variable(|| Ok(F::from(val as u64)))
+    a: Variable,
+    b: Variable,
+) -> Result<(), SynthesisError> {
+    cs.enforce_constraint(
+        LinearCombination::from(a),
+        LinearCombination::from(Variable::One),
+        LinearCombination::from(b),
+    )
 }
 
-// ─── Gadget 1: Wesolowski VDF verification (~70,000 constraints) ─────────────
+// ─── Gadget: bind VDF output byte to a public input ──────────────────────────
 
-fn vdf_verify_gadget<F: PrimeField>(
+/// Allocate `y` as witness and expose `y[0]` as a public input.
+///
+/// This does **not** verify the Wesolowski equation `π^ℓ · g^r = y (mod N)`.
+/// Doing so in-circuit needs 2048-bit non-native modular arithmetic, and there
+/// is no reason to pay for it: `WesolowskiVdf::verify` checks the same equation
+/// natively in O(log T) outside the SNARK. The circuit's job is only to bind the
+/// proof to the `y` the verifier already validated.
+fn bind_vdf_output_gadget<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
     y: &Option<Vec<u8>>,
-    g: &Option<Vec<u8>>,
-    n_modulus: &Option<Vec<u8>>,
-    pi_vdf: &Option<Vec<u8>>,
 ) -> Result<Vec<Variable>, SynthesisError> {
     let y_vars = alloc_witnesses::<F>(cs, y, 32)?;
-    let g_vars = alloc_witnesses::<F>(cs, g, 32)?;
-    let _n_vars = alloc_witnesses::<F>(cs, n_modulus, 32)?;
-    let _pi_vars = alloc_witnesses::<F>(cs, pi_vdf, 32)?;
 
-    // Simulate modular multiplication constraint chain.
-    // Each enforce_constraint call adds 1 constraint.
-    // Target: VDF_VERIFY_CONSTRAINTS total.
-    let mut count = 4 * 32; // already allocated above
-    let mut acc_var = y_vars[0];
-
-    while count < VDF_VERIFY_CONSTRAINTS {
-        let idx = count % 32;
-        // Allocate intermediate: tmp = acc * g[idx]
-        let acc_val = cs.assigned_value(acc_var).unwrap_or(F::zero());
-        let g_val = cs.assigned_value(g_vars[idx]).unwrap_or(F::zero());
-        let tmp_val = acc_val * g_val;
-        let tmp_var = cs.new_witness_variable(|| Ok(tmp_val))?;
-
-        // Enforce: acc * g[idx] = tmp
-        cs.enforce_constraint(
-            LinearCombination::from(acc_var),
-            LinearCombination::from(g_vars[idx]),
-            LinearCombination::from(tmp_var),
-        )?;
-        acc_var = tmp_var;
-        count += 1;
-    }
-
-    // Public input: y[0] (first byte of VDF output).
-    let y_pub = alloc_input::<F>(cs, y, 0)?;
-    // Enforce: y_vars[0] * 1 = y_pub
-    cs.enforce_constraint(
-        LinearCombination::from(y_vars[0]),
-        LinearCombination::from(Variable::One),
-        LinearCombination::from(y_pub),
-    )?;
+    let y0 = y.as_ref().and_then(|b| b.first()).copied().unwrap_or(0);
+    let y_pub = cs.new_input_variable(|| Ok(F::from(y0 as u64)))?;
+    enforce_eq(cs, y_vars[0], y_pub)?;
 
     Ok(y_vars)
 }
 
-// ─── Gadget 2: HKDF-Poseidon (~20,000 constraints) ───────────────────────────
+// ─── Gadget: Poseidon x^5 sponge ─────────────────────────────────────────────
 
-/// Real Poseidon sponge gadget encoding the x^5 S-box correctly.
+/// Poseidon sponge over `(y, salt)`, width 3 (rate 2, capacity 1).
 ///
-/// Construction: state width=3 (rate=2, capacity=1).
-/// Each full round applies x^5 to all 3 elements: 3 multiplications each
-/// (x^2, x^4, x^5) = 3 constraints per element = 9 per round.
-/// MDS linear mix adds 1 constraint per round = 10 per round total.
-/// Partial rounds apply x^5 to one element only = 4 constraints per round.
-/// Standard BN254 Poseidon: 8 full + 57 partial rounds per permutation.
-/// Per permutation: 8*10 + 57*4 = 308 constraints.
-/// We run permutations until HKDF_POSEIDON_CONSTRAINTS is reached.
+/// Per permutation: 8 full rounds (x^5 on all three lanes plus MDS mix, 10
+/// constraints each) and 57 partial rounds (x^5 on lane 0 plus MDS, 4 each) =
+/// 308 constraints. Runs [`POSEIDON_PERMUTATIONS`] of them.
+///
+/// Previously this looped until a 20,000-constraint target was reached. The
+/// round arithmetic itself was correct — unlike the other three gadgets — so
+/// only the padding loop is removed. The squeeze step was also emitting
+/// *unconstrained* witness variables; those are now bound.
 fn hkdf_poseidon_gadget<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
     y: &Option<Vec<u8>>,
@@ -202,26 +213,38 @@ fn hkdf_poseidon_gadget<F: PrimeField>(
 
     // Absorb: initialise sponge state with y[0], salt[0], y[1].
     let mut state = [y_vars[0], salt_vars[0], y_vars[1]];
-    let mut count = 64;
 
-    // Helper: apply x^5 S-box to one variable, return new variable (+3 constraints).
-    let x5 = |cs: &ConstraintSystemRef<F>, x: Variable, cnt: &mut usize| -> Result<Variable, SynthesisError> {
-        let xv  = cs.assigned_value(x).unwrap_or(F::zero());
-        let sq  = xv * xv;
+    // x^5 S-box: 3 constraints (x^2, x^4, x^5).
+    let x5 = |cs: &ConstraintSystemRef<F>, x: Variable| -> Result<Variable, SynthesisError> {
+        let xv = cs.assigned_value(x).unwrap_or(F::zero());
+        let sq = xv * xv;
         let sq_var = cs.new_witness_variable(|| Ok(sq))?;
-        cs.enforce_constraint(LinearCombination::from(x), LinearCombination::from(x), LinearCombination::from(sq_var))?;
+        cs.enforce_constraint(
+            LinearCombination::from(x),
+            LinearCombination::from(x),
+            LinearCombination::from(sq_var),
+        )?;
         let sq2 = sq * sq;
         let sq2_var = cs.new_witness_variable(|| Ok(sq2))?;
-        cs.enforce_constraint(LinearCombination::from(sq_var), LinearCombination::from(sq_var), LinearCombination::from(sq2_var))?;
+        cs.enforce_constraint(
+            LinearCombination::from(sq_var),
+            LinearCombination::from(sq_var),
+            LinearCombination::from(sq2_var),
+        )?;
         let x5v = sq2 * xv;
         let x5_var = cs.new_witness_variable(|| Ok(x5v))?;
-        cs.enforce_constraint(LinearCombination::from(sq2_var), LinearCombination::from(x), LinearCombination::from(x5_var))?;
-        *cnt += 3;
+        cs.enforce_constraint(
+            LinearCombination::from(sq2_var),
+            LinearCombination::from(x),
+            LinearCombination::from(x5_var),
+        )?;
         Ok(x5_var)
     };
 
-    // Helper: MDS mix — enforce state[0]+state[1]+state[2] = mix (+1 constraint).
-    let mds_mix = |cs: &ConstraintSystemRef<F>, st: &mut [Variable; 3], cnt: &mut usize| -> Result<(), SynthesisError> {
+    // MDS mix: enforce state[0] + state[1] + state[2] = mix. 1 constraint.
+    let mds_mix = |cs: &ConstraintSystemRef<F>,
+                   st: &mut [Variable; 3]|
+     -> Result<(), SynthesisError> {
         let v0 = cs.assigned_value(st[0]).unwrap_or(F::zero());
         let v1 = cs.assigned_value(st[1]).unwrap_or(F::zero());
         let v2 = cs.assigned_value(st[2]).unwrap_or(F::zero());
@@ -231,142 +254,72 @@ fn hkdf_poseidon_gadget<F: PrimeField>(
         lc += (F::one(), st[0]);
         lc += (F::one(), st[1]);
         lc += (F::one(), st[2]);
-        cs.enforce_constraint(lc, LinearCombination::from(Variable::One), LinearCombination::from(mix_var))?;
+        cs.enforce_constraint(
+            lc,
+            LinearCombination::from(Variable::One),
+            LinearCombination::from(mix_var),
+        )?;
         st[0] = mix_var;
-        *cnt += 1;
         Ok(())
     };
 
-    while count < HKDF_POSEIDON_CONSTRAINTS {
-        // 8 full rounds: x^5 on all 3 elements + MDS.
+    for _ in 0..POSEIDON_PERMUTATIONS {
         for _ in 0..8 {
-            if count >= HKDF_POSEIDON_CONSTRAINTS { break; }
             for slot in state.iter_mut() {
-                *slot = x5(cs, *slot, &mut count)?;
+                *slot = x5(cs, *slot)?;
             }
-            mds_mix(cs, &mut state, &mut count)?;
+            mds_mix(cs, &mut state)?;
         }
-        // 57 partial rounds: x^5 on state[0] only + MDS.
         for _ in 0..57 {
-            if count >= HKDF_POSEIDON_CONSTRAINTS { break; }
-            state[0] = x5(cs, state[0], &mut count)?;
-            mds_mix(cs, &mut state, &mut count)?;
+            state[0] = x5(cs, state[0])?;
+            mds_mix(cs, &mut state)?;
         }
     }
 
-    // Squeeze: 32 output variables from sponge state.
+    // Squeeze 32 bytes. Each output is constrained as state_lane + y[i], so the
+    // variables are bound rather than free.
     let mut k_enc = Vec::with_capacity(32);
     for i in 0..32 {
-        let src_val = cs.assigned_value(state[i % 3]).unwrap_or(F::zero());
-        let y_val = F::from(y.as_ref().and_then(|b| b.get(i)).copied().unwrap_or(0) as u64);
-        let out_val = src_val + y_val;
+        let lane = state[i % 3];
+        let lane_val = cs.assigned_value(lane).unwrap_or(F::zero());
+        let y_val = cs.assigned_value(y_vars[i]).unwrap_or(F::zero());
+        let out_val = lane_val + y_val;
         let out_var = cs.new_witness_variable(|| Ok(out_val))?;
+
+        let mut lc = LinearCombination::zero();
+        lc += (F::one(), lane);
+        lc += (F::one(), y_vars[i]);
+        cs.enforce_constraint(
+            lc,
+            LinearCombination::from(Variable::One),
+            LinearCombination::from(out_var),
+        )?;
         k_enc.push(out_var);
     }
 
-    let _ = salt_vars;
     Ok(k_enc)
 }
 
-// ─── Gadget 3: AES-GCM decryption (~60,000 constraints) ──────────────────────
+// ─── Gadget: zeroization ─────────────────────────────────────────────────────
 
-fn aes_gcm_gadget<F: PrimeField>(
+/// Prove every byte of the wiped buffer equals [`WIPE_PATTERN`].
+///
+/// [`WIPE_PATTERN`] is a compile-time constant exposed as a single public input,
+/// so the verifier supplies the value it expects. The previous revision derived
+/// this public input from `sk` itself, which reduced the check to `sk[0] ==
+/// sk[0]` and bound nothing.
+///
+/// All [`SK_LEN`] bytes are checked, not just the first.
+fn zeroization_gadget<F: PrimeField>(
     cs: &ConstraintSystemRef<F>,
-    k_enc: &[Variable],
-    ct_sk: &Option<Vec<u8>>,
-    sk: &Option<Vec<u8>>,
-) -> Result<(), SynthesisError> {
-    let ct_vars = alloc_witnesses::<F>(cs, ct_sk, 48)?;
-    let sk_vars = alloc_witnesses::<F>(cs, sk, 32)?;
-
-    // Simulate AES S-box constraint chain.
-    let mut count = 80;
-    let mut state_var = ct_vars[0];
-
-    while count < AES_GCM_CONSTRAINTS {
-        let k_idx = count % k_enc.len().max(1);
-        let s_val = cs.assigned_value(state_var).unwrap_or(F::zero());
-        let k_val = cs.assigned_value(k_enc[k_idx]).unwrap_or(F::zero());
-        let sq_val = s_val * s_val;
-        let sq_var = cs.new_witness_variable(|| Ok(sq_val))?;
-        cs.enforce_constraint(
-            LinearCombination::from(state_var),
-            LinearCombination::from(state_var),
-            LinearCombination::from(sq_var),
-        )?;
-        let res_val = sq_val * k_val;
-        let res_var = cs.new_witness_variable(|| Ok(res_val))?;
-        cs.enforce_constraint(
-            LinearCombination::from(sq_var),
-            LinearCombination::from(k_enc[k_idx]),
-            LinearCombination::from(res_var),
-        )?;
-        state_var = res_var;
-        count += 2;
-    }
-
-    // Enforce: sk[0] * 1 = sk[0] (identity — production: AES-GCM-Dec check).
-    cs.enforce_constraint(
-        LinearCombination::from(sk_vars[0]),
-        LinearCombination::from(Variable::One),
-        LinearCombination::from(sk_vars[0]),
-    )?;
-
-    Ok(())
-}
-
-// ─── Gadget 4: Merkle root zeroization check (~30,000 constraints) ────────────
-
-fn merkle_zero_gadget<F: PrimeField>(
-    cs: &ConstraintSystemRef<F>,
-    m_pre: &Option<Vec<u8>>,
     sk_wiped: &Option<Vec<u8>>,
 ) -> Result<(), SynthesisError> {
-    let m_pre_vars = alloc_witnesses::<F>(cs, m_pre, 32)?;
-    let sk_vars = alloc_witnesses::<F>(cs, sk_wiped, 32)?;
+    let sk_vars = alloc_witnesses::<F>(cs, sk_wiped, SK_LEN)?;
 
-    // Simulate SHA-256 compression constraint chain.
-    let mut count = 64;
-    let mut acc_var = m_pre_vars[0];
-
-    while count < MERKLE_ZERO_CONSTRAINTS {
-        let idx = count % 32;
-        let a_val = cs.assigned_value(acc_var).unwrap_or(F::zero());
-        let b_val = cs.assigned_value(m_pre_vars[idx]).unwrap_or(F::zero());
-        let sq_val = a_val * a_val;
-        let sq_var = cs.new_witness_variable(|| Ok(sq_val))?;
-        cs.enforce_constraint(
-            LinearCombination::from(acc_var),
-            LinearCombination::from(acc_var),
-            LinearCombination::from(sq_var),
-        )?;
-        let mix_val = sq_val * b_val;
-        let mix_var = cs.new_witness_variable(|| Ok(mix_val))?;
-        cs.enforce_constraint(
-            LinearCombination::from(sq_var),
-            LinearCombination::from(m_pre_vars[idx]),
-            LinearCombination::from(mix_var),
-        )?;
-        acc_var = mix_var;
-        count += 2;
+    let wipe_pub = cs.new_input_variable(|| Ok(F::from(WIPE_PATTERN as u64)))?;
+    for v in &sk_vars {
+        enforce_eq(cs, *v, wipe_pub)?;
     }
-
-    // Public input: the expected wipe pattern byte (0xFF = 255 for triple-pass wipe).
-    // Constraint: sk_vars[0] * 1 = wipe_pattern_pub
-    // This enforces that the first byte of the wiped buffer equals the declared
-    // wipe pattern, binding the witness to the public input.
-    // In production this would be extended to all bytes via a Merkle commitment.
-    let wipe_val = sk_wiped
-        .as_ref()
-        .and_then(|b| b.first())
-        .copied()
-        .unwrap_or(0xFF);
-    let wipe_pattern_pub = cs.new_input_variable(|| Ok(F::from(wipe_val as u64)))?;
-    cs.enforce_constraint(
-        LinearCombination::from(sk_vars[0]),
-        LinearCombination::from(Variable::One),
-        LinearCombination::from(wipe_pattern_pub),
-    )?;
 
     Ok(())
 }
@@ -377,9 +330,9 @@ mod tests {
     use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
 
-    fn make_test_circuit() -> ErasureCircuit<Fr> {
+    fn circuit_with_sk(sk: Vec<u8>) -> ErasureCircuit<Fr> {
         ErasureCircuit::new_for_proving(
-            vec![0xFFu8; 32],
+            sk,
             vec![0xDEu8; 32],
             vec![0xABu8; 32],
             vec![0xCDu8; 32],
@@ -390,34 +343,93 @@ mod tests {
         )
     }
 
+    fn wiped_circuit() -> ErasureCircuit<Fr> {
+        circuit_with_sk(vec![WIPE_PATTERN; SK_LEN])
+    }
+
     #[test]
-    fn test_erasure_circuit_is_satisfiable() {
+    fn test_circuit_satisfiable_when_fully_wiped() {
         let cs = ConstraintSystem::<Fr>::new_ref();
-        let circuit = make_test_circuit();
-        circuit.generate_constraints(cs.clone()).expect("constraint generation must not fail");
+        wiped_circuit()
+            .generate_constraints(cs.clone())
+            .expect("constraint generation must not fail");
         assert!(
             cs.is_satisfied().expect("satisfiability check must not fail"),
-            "Circuit must be satisfiable with valid witnesses"
+            "circuit must be satisfiable when every sk byte is the wipe pattern"
+        );
+    }
+
+    /// The property the old circuit did not have: an unwiped buffer must fail.
+    #[test]
+    fn test_circuit_rejects_unwiped_buffer() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circuit_with_sk(vec![0x00u8; SK_LEN])
+            .generate_constraints(cs.clone())
+            .expect("constraint generation must not fail");
+        assert!(
+            !cs.is_satisfied().expect("satisfiability check must not fail"),
+            "an all-zero buffer must not satisfy the zeroization gadget"
+        );
+    }
+
+    /// Every byte is checked, not just the first — this is what the old
+    /// single-byte binding missed.
+    #[test]
+    fn test_circuit_rejects_partial_wipe() {
+        for tampered_index in [1usize, 7, 16, SK_LEN - 1] {
+            let mut sk = vec![WIPE_PATTERN; SK_LEN];
+            sk[tampered_index] = 0x00;
+
+            let cs = ConstraintSystem::<Fr>::new_ref();
+            circuit_with_sk(sk)
+                .generate_constraints(cs.clone())
+                .expect("constraint generation must not fail");
+            assert!(
+                !cs.is_satisfied().expect("satisfiability check must not fail"),
+                "a buffer left unwiped at byte {tampered_index} must be rejected"
+            );
+        }
+    }
+
+    /// Guard against the padding returning. If this count jumps by orders of
+    /// magnitude, someone has reintroduced filler constraints.
+    #[test]
+    fn test_constraint_count_is_small_and_real() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        wiped_circuit()
+            .generate_constraints(cs.clone())
+            .expect("constraint generation must not fail");
+
+        let n = cs.num_constraints();
+        println!("ErasureCircuit constraint count: {n}");
+
+        // 2 permutations * 308 + 32 squeeze + 32 zeroization + 1 y-binding ≈ 681.
+        assert!(
+            (500..2_000).contains(&n),
+            "expected roughly 700 real constraints, got {n} — \
+             a count far above this suggests filler has been reintroduced"
         );
     }
 
     #[test]
-    fn test_erasure_circuit_constraint_count() {
+    fn test_public_input_count_and_order() {
         let cs = ConstraintSystem::<Fr>::new_ref();
-        let circuit = make_test_circuit();
-        circuit.generate_constraints(cs.clone()).expect("constraint generation must not fail");
-        let num_constraints = cs.num_constraints();
-        assert!(
-            num_constraints >= 150_000,
-            "Circuit must have ≥150,000 constraints, got {num_constraints}"
+        wiped_circuit()
+            .generate_constraints(cs.clone())
+            .expect("constraint generation must not fail");
+        // num_instance_variables counts the implicit `One` plus our two inputs.
+        assert_eq!(
+            cs.num_instance_variables(),
+            3,
+            "verifier ABI is [y[0], WIPE_PATTERN]; changing this breaks verify_erasure"
         );
-        println!("ErasureCircuit constraint count: {num_constraints}");
     }
 
     #[test]
     fn test_setup_circuit_no_witnesses() {
         let cs = ConstraintSystem::<Fr>::new_ref();
-        let circuit = ErasureCircuit::<Fr>::new_for_setup();
-        circuit.generate_constraints(cs.clone()).expect("setup must not fail");
+        ErasureCircuit::<Fr>::new_for_setup()
+            .generate_constraints(cs.clone())
+            .expect("setup must not fail");
     }
 }

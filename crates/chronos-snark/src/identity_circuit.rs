@@ -1,28 +1,48 @@
-/// Zero-Knowledge Identity Proof Circuit (~10,000 R1CS constraints).
+/// EAIP identity circuit — mission-ID binding. No filler constraints.
 ///
-/// Proves that the prover knows a pre-image `y` such that:
-///   SHA-256(y) == R  (the public identity root)
-/// without revealing `y` (the raw VDF output).
+/// # What this circuit proves
 ///
-/// Public inputs:
-///   - `root_byte`: first byte of the identity root R (binding commitment)
-///   - `mission_id_byte`: first byte of the mission ID hash
+/// | Property | Status |
+/// |----------|--------|
+/// | The prover used the mission ID the verifier claims | **enforced** |
+/// | The proof is bound to a declared identity root byte | **enforced** |
+/// | Knowledge of `y` such that `SHA-256(y) == R` | **not enforced** |
 ///
-/// Witness (private):
-///   - `y_bytes`: the VDF output bytes
-///   - `mission_id_bytes`: the mission ID bytes
+/// # The pre-image claim is not yet met
 ///
-/// In production this would use a Poseidon hash gadget for the pre-image
-/// proof. The current implementation uses a constraint chain that encodes
-/// the binding relationship with the correct constraint count.
+/// Proving `SHA-256(y) == R` in zero knowledge requires a SHA-256 R1CS gadget.
+/// SHA-256 is bit-oriented and costs on the order of 25,000 constraints. The
+/// previous revision did not implement one: it emitted 10,000 filler
+/// multiplications in a `while count < IDENTITY_CONSTRAINTS` loop, described in
+/// a comment as a "constraint chain that encodes the binding relationship with
+/// the correct constraint count".
+///
+/// It also contained a soundness bug. Two products were computed —
+/// `y[0] * mid[0]` and `root_pub * mid_pub` — each assigned to a fresh witness
+/// variable, but the two were **never constrained equal**. Both constraints were
+/// therefore just definitions, and nothing tied the witness to either public
+/// input. A prover could supply any `y` and any mission ID.
+///
+/// The filler is removed and the mission-ID binding is made real. Until the
+/// pre-image relation is encoded, this is a **commitment to a mission ID**, not
+/// a zero-knowledge identity proof, and `EAIP` should be described that way.
+///
+/// The right fix is to bind the identity root with the Poseidon permutation
+/// already implemented in [`crate::circuit`] instead of SHA-256 — a few hundred
+/// real constraints rather than 25,000 — which means changing how the root is
+/// derived in `chronos-vdf::generate_identity_root`. That is a protocol change,
+/// tracked separately.
+///
+/// Public inputs, in allocation order — this order is the verifier ABI and must
+/// match [`IdentityProver::verify_identity_proof`]:
+/// 1. `root[0]` — first byte of the declared identity root
+/// 2. `mission_id_bytes[0]` — first byte of the mission ID hash
 use ark_ff::PrimeField;
 use ark_relations::r1cs::{
     ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 use ark_std::vec::Vec;
 use chronos_core::{ChronosError, ChronosResult};
-
-const IDENTITY_CONSTRAINTS: usize = 10_000;
 
 /// Zero-knowledge identity proof circuit.
 ///
@@ -84,55 +104,23 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for IdentityCircuit<F> {
             .unwrap_or(0);
         let mid_pub = cs.new_input_variable(|| Ok(F::from(mid_val as u64)))?;
 
-        // Enforce: y_vars[0] * mid_vars[0] = root_pub * mid_pub
-        // This binds the witness to both public inputs.
-        {
-            let lhs_val = cs.assigned_value(y_vars[0]).unwrap_or(F::zero())
-                * cs.assigned_value(mid_vars[0]).unwrap_or(F::zero());
-            let lhs_var = cs.new_witness_variable(|| Ok(lhs_val))?;
-            cs.enforce_constraint(
-                LinearCombination::from(y_vars[0]),
-                LinearCombination::from(mid_vars[0]),
-                LinearCombination::from(lhs_var),
-            )?;
+        // Enforce: mission_id_bytes[0] == mid_pub.
+        //
+        // This is the one binding the circuit genuinely establishes: the prover
+        // must have used the mission ID the verifier supplies. The previous
+        // revision computed two products and never constrained them equal, so no
+        // binding existed at all.
+        cs.enforce_constraint(
+            LinearCombination::from(mid_vars[0]),
+            LinearCombination::from(Variable::One),
+            LinearCombination::from(mid_pub),
+        )?;
 
-            let rhs_val = cs.assigned_value(root_pub).unwrap_or(F::zero())
-                * cs.assigned_value(mid_pub).unwrap_or(F::zero());
-            let rhs_var = cs.new_witness_variable(|| Ok(rhs_val))?;
-            cs.enforce_constraint(
-                LinearCombination::from(root_pub),
-                LinearCombination::from(mid_pub),
-                LinearCombination::from(rhs_var),
-            )?;
-        }
-
-        // Hash-chain constraint simulation (~10,000 constraints total).
-        // Models the SHA-256 pre-image proof: proves knowledge of y such that
-        // SHA-256(y) == root without revealing y.
-        let mut count = 4 + 32 + 32; // allocated above
-        let mut acc = y_vars[0];
-
-        while count < IDENTITY_CONSTRAINTS {
-            let idx = count % 32;
-            let a_val = cs.assigned_value(acc).unwrap_or(F::zero());
-            let b_val = cs.assigned_value(y_vars[idx]).unwrap_or(F::zero());
-            let sq_val = a_val * a_val;
-            let sq_var = cs.new_witness_variable(|| Ok(sq_val))?;
-            cs.enforce_constraint(
-                LinearCombination::from(acc),
-                LinearCombination::from(acc),
-                LinearCombination::from(sq_var),
-            )?;
-            let mix_val = sq_val * b_val;
-            let mix_var = cs.new_witness_variable(|| Ok(mix_val))?;
-            cs.enforce_constraint(
-                LinearCombination::from(sq_var),
-                LinearCombination::from(y_vars[idx]),
-                LinearCombination::from(mix_var),
-            )?;
-            acc = mix_var;
-            count += 2;
-        }
+        // `root_pub` is exposed so the proof is bound to a declared identity
+        // root, but the relation `SHA-256(y) == root` is NOT encoded — see the
+        // module docs. `y_vars` is therefore unconstrained: it is allocated so
+        // the witness layout stays stable for when the pre-image gadget lands.
+        let _ = (&y_vars, root_pub);
 
         Ok(())
     }
@@ -182,10 +170,12 @@ impl IdentityProver {
         Ok(())
     }
 
-    /// Generate a zero-knowledge identity proof.
+    /// Generate an identity proof binding the mission ID and declared root.
     ///
-    /// Proves knowledge of `y_bytes` such that `SHA-256(y_bytes) == root`
-    /// without revealing `y_bytes`.
+    /// NOTE: this does **not** currently prove knowledge of `y_bytes` such that
+    /// `SHA-256(y_bytes) == root`. That relation is not encoded in the circuit —
+    /// see the module documentation. `y_bytes` is accepted and kept private, but
+    /// no constraint ties it to `root`.
     ///
     /// # Errors
     /// Returns [`ChronosError::Snark`] if proof generation fails.
@@ -283,8 +273,11 @@ mod tests {
         );
     }
 
+    /// Guard against filler constraints returning. The circuit currently encodes
+    /// exactly one real constraint (the mission-ID binding); a count in the
+    /// thousands means padding has been reintroduced.
     #[test]
-    fn test_identity_circuit_constraint_count() {
+    fn test_identity_circuit_constraint_count_is_small() {
         let root = [0xABu8; 32];
         let circuit = IdentityCircuit::<Fr>::new_for_proving(
             vec![0xABu8; 32],
@@ -294,8 +287,13 @@ mod tests {
         let cs = ConstraintSystem::<Fr>::new_ref();
         circuit.generate_constraints(cs.clone()).expect("constraint generation must not fail");
         let n = cs.num_constraints();
-        assert!(n >= 9_000, "Identity circuit must have ≥9,000 constraints, got {n}");
+        println!("IdentityCircuit constraint count: {n}");
+        assert!(
+            n <= 100,
+            "expected a handful of real constraints, got {n} — filler reintroduced?"
+        );
     }
+
 
     #[test]
     fn test_identity_prover_roundtrip() {

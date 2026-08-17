@@ -28,10 +28,13 @@ crates/
 | Wesolowski VDF (pure `num-bigint`, RSA-2048) | Working |
 | AES-256-GCM decryption of `ct_sk` | Working |
 | HKDF-SHA256 key derivation (RFC 5869) | Working |
-| Groth16 erasure proof (BN254, ~180k constraints) | Working |
+| Groth16 erasure proof (BN254, ~700 constraints) | Working — proves all 32 key bytes hold the wipe pattern |
 | Poseidon x^5 sponge gadget | Working |
-| 3-party simulated MPC trusted setup | Working |
-| EAIP identity root + ZK proof | Working |
+| EAIP identity root (VDF-derived) | Working |
+| Groth16 trusted setup | Local only — single party holds the trapdoor, not a ceremony |
+| EAIP identity proof | Partial — binds mission ID; `SHA-256(y) == R` not encoded |
+| In-circuit VDF verification | Not encoded — verified natively outside the SNARK instead |
+| In-circuit AES-GCM decryption | Not encoded |
 | ML-DSA (Dilithium3) PQ identity signing | Working |
 | BLS12-381 drand signature verification | Working |
 | Drand fetch with exponential backoff retry | Working |
@@ -83,14 +86,15 @@ Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (releas
 > constant across rows. `crates/chronos-vdf/src/wesolowski.rs::test_wall_time_scales_with_t`
 > asserts this and fails if evaluation ever becomes constant-time in `T` again.
 
-**Groth16 Erasure Proof — BN254 (~180k constraints)**
+**Groth16 Erasure Proof — BN254 (~700 constraints)**
 
-| Operation | Time |
-|-----------|------|
-| MPC trusted setup | 3.2 s |
-| Proof generation | 1.6 s |
-| Proof verification | 4 ms |
-| Proof size | 128 bytes |
+> **Withdrawn pending re-measurement.** The previous figures (setup 3.2 s,
+> proving 1.6 s) were measured against a circuit padded to ~180,000 constraints,
+> roughly 160,000 of which were filler. The circuit now contains ~700 real
+> constraints, so setup and proving should be one to three orders of magnitude
+> faster. Re-run `cargo run -p chronos-bench --release` and replace this block.
+> Proof size is unchanged at 128 bytes — Groth16 proofs are constant-size
+> regardless of circuit size.
 
 **LockedBytes — mlock overhead**
 
@@ -106,10 +110,12 @@ Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (releas
 | Gap | Impact |
 |-----|--------|
 | FHE evaluation is a stub (byte-reversal) | Inference not cryptographically sound |
-| Groth16 circuit gadgets simulate AES-GCM/Merkle constraints | Proof not binding to actual computation |
+| Erasure proof binds a prover-supplied buffer | Proves *a* buffer was zeroized, not that *the* key was; needs a verifier-held pre-wipe commitment |
+| `ct_sk` → `sk` decryption not encoded in-circuit | Proof does not tie the wiped buffer to the time-locked ciphertext; fix is Poseidon-based AEAD, not an AES gadget |
+| EAIP pre-image relation not encoded | `SHA-256(y) == R` unproven, so EAIP is a mission-ID commitment rather than a ZK identity proof |
 | `certN.bin` falls back to hardcoded RSA-2048 | VDF group order not from MPC ceremony; one fixed public modulus shared by all deployments |
 | Blind VDF saves the client no sequential work | Client must do T squarings to build `r^(2^T)`; outsourcing goal unmet as specified |
-| MPC trusted setup is simulated (3-party local) | Toxic waste not distributed across real parties |
+| Trusted setup is single-party, not a ceremony | Whoever runs setup holds the trapdoor and can forge proofs; XOR-folding three local RNGs adds nothing |
 | `F_OS` axiomatized, not reduced to hardware attestation | Strongest security claim unproven |
 | mTLS not enforced by axum server | Plain HTTP in default config |
 
