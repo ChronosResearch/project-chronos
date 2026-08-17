@@ -57,12 +57,12 @@ impl PoswEngine {
         // CPU-bound hasher – must not run on the async executor.
         let result = tokio::task::spawn_blocking(move || {
             let mut current = g_clone;
-            #[cfg(debug_assertions)]
-            let effective_t = t.min(10); // STEP 19
-            #[cfg(not(debug_assertions))]
-            let effective_t = t;
 
-            for i in 0..effective_t {
+            // `t` is honoured exactly in every build profile.  A previous
+            // revision clamped it to 10 under `#[cfg(debug_assertions)]`, which
+            // silently reduced the sequential work to a constant in any
+            // non-release build, including under `cargo test`.
+            for i in 0..t {
                 if abort_clone.load(Ordering::Relaxed) {
                     return Err(ChronosError::Vdf("Aborted by watchdog signal".into()));
                 }

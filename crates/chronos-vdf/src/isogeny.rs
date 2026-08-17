@@ -73,17 +73,15 @@ pub struct IsogenyVdfSimulator;
 
 impl IsogenyVdfEngine for IsogenyVdfSimulator {
     fn evaluate_isogeny(&self, seed: &[u8], t: u64) -> ChronosResult<IsogenyVdfOutput> {
-        #[cfg(debug_assertions)]
-        let effective_t = t.min(16);
-        #[cfg(not(debug_assertions))]
-        let effective_t = t;
-
+        // `t` is honoured exactly in every build profile.  A previous revision
+        // clamped it to 16 under `#[cfg(debug_assertions)]`, which silently
+        // reduced the sequential work to a constant in any non-release build.
         let mut state = seed.to_vec();
         // Collect every 256th intermediate for the Merkle proof.
         let checkpoint_interval = 256u64;
         let mut checkpoints: Vec<Vec<u8>> = vec![state.clone()];
 
-        for i in 0..effective_t {
+        for i in 0..t {
             let mut h = Sha256::new();
             h.update(&state);
             // Domain-separate each step with the step index.

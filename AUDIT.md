@@ -39,6 +39,14 @@ Full audit completed across all crates. Zero `expect()`/`unwrap()` in production
 | 24 | Fallback metric naming caused potential panic | Medium | `metrics.rs` | Fixed unique names per fallback metric |
 | 25 | `NonceCache` missing from `AppState` | High | `main.rs` | Added; middleware now actually checks cache |
 | 26 | `ct_sk` not wiped after use | High | `main.rs` | `secure_wipe` called on `ct_sk_owned` before drop |
+| 27 | VDF benchmark measured prime search, not sequential squaring — published timings were non-monotonic in `T` | Critical | `wesolowski.rs` | `is_prime_trial` (trial division to √n, ~10⁹ ops, cost independent of `T`) replaced with deterministic Miller-Rabin |
+| 28 | `T` silently clamped to 10 in debug builds, in **both** `evaluate` and `verify` — time-bound existence unenforced and untested under `cargo test` | Critical | `wesolowski.rs`, `posw.rs`, `isogeny.rs` | Clamp removed everywhere; added `test_proof_bound_to_declared_t` and `test_distinct_t_yields_distinct_output` |
+| 29 | `while i * i <= n` overflowed `u64` for `n` near 2^64 — scan ran past √n in release, panicked under overflow checks | High | `wesolowski.rs` | Eliminated with Miller-Rabin; `mul_mod` routes all products through `u128` |
+| 30 | `BigUint::one() << t` materialised a `T`-bit integer (125 KB at T=10⁶, 128 MB at T=2³⁰) | High | `wesolowski.rs`, `blind.rs` | Long-division recurrence for `π` and `repeated_square` for blinding; memory now independent of `T` |
+
+**Note on check #30 below ("Benchmark suite ✅"):** that row predates bug #27. The
+suite ran and produced output, but the VDF timings it produced did not measure
+sequential work. Treat the benchmark table as unverified until re-measured.
 
 ---
 
