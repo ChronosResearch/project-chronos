@@ -2,6 +2,15 @@
 ///
 /// Measures the three performance claims in the paper:
 ///   1. VDF timing at T = 1k / 10k / 100k / 1M squarings
+///
+/// # Interpreting the VDF rows
+/// Wall time should grow close to linearly in `T`, leaving squarings/sec roughly
+/// constant across rows. If squarings/sec varies by orders of magnitude, or wall
+/// time is non-monotonic in `T`, the measurement is being dominated by something
+/// other than sequential squaring — which is exactly what happened before
+/// `is_prime_trial` was replaced with Miller-Rabin (see AUDIT.md #27).
+/// Note that `evaluate` performs `2T` squarings in total: `T` for `y` and `T`
+/// for the Wesolowski proof.
 ///   2. Groth16 erasure proof generation and verification latency
 ///   3. Peak memory under mlock (LockedBytes allocation cost)
 ///

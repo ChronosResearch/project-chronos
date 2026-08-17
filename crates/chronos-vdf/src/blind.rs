@@ -51,13 +51,21 @@ impl BlindVdfClient {
         // r ← random in [2, N-1]
         let r = rng.gen_biguint_range(&BigUint::from(2u32), n);
 
-        // r_pow = r^(2^T) mod N.
-        // The client knows r, so it can use fast modular exponentiation
-        // (square-and-multiply in O(T) bit-ops) rather than T sequential squarings.
-        // Using the VDF's sequential squaring here would defeat the purpose of
-        // blind outsourcing — the client would be doing the same work as the server.
-        let exp = BigUint::one() << t as usize; // 2^T
-        let r_pow = r.modpow(&exp, n);
+        // r_pow = r^(2^T) mod N, by T repeated squarings in constant memory.
+        //
+        // NOTE ON COST: an earlier revision built the exponent as
+        // `BigUint::one() << t` and called `modpow`, with a comment claiming this
+        // was asymptotically cheaper than sequential squaring.  It is not —
+        // square-and-multiply over a T-bit exponent performs T squarings, so the
+        // two approaches cost the same. The only difference was that
+        // materialising `2^T` also allocated a T-bit integer (125 KB at
+        // T = 10^6, 128 MB at T = 2^30). That allocation is now gone.
+        //
+        // The client genuinely cannot beat T squarings here without knowing
+        // φ(N), which means blind outsourcing as currently specified does not
+        // save the client any sequential work. Tracked separately; this change
+        // only removes the allocation, it does not alter the protocol.
+        let r_pow = repeated_square(&r, t, n);
 
         // g_blind = g · r_pow mod N
         let g_blind = (g * &r_pow) % n;
@@ -85,11 +93,9 @@ impl BlindVdfClient {
         t: u64,
         n: &BigUint,
     ) -> ChronosResult<BigUint> {
-        // r_pow_2t = r^(2^(2T)) mod N = (r^(2^T))^(2^T) mod N.
-        // The client knows r_pow, so fast modpow is correct here —
-        // no sequential squaring needed.
-        let exp = BigUint::one() << t as usize; // 2^T
-        let r_pow_2t = ctx.r_pow.modpow(&exp, n);
+        // r_pow_2t = r^(2^(2T)) mod N = (r^(2^T))^(2^T) mod N,
+        // by T repeated squarings in constant memory (see note in `blind`).
+        let r_pow_2t = repeated_square(&ctx.r_pow, t, n);
 
         // y = y_blind · modinv(r_pow_2t, N) mod N
         let inv = mod_inverse(&r_pow_2t, n).ok_or_else(|| {
@@ -131,6 +137,20 @@ impl BlindVdfServer {
         let vdf = WesolowskiVdf;
         vdf.verify(g_blind, y_blind, proof, t, n)
     }
+}
+
+// ─── Repeated squaring ───────────────────────────────────────────────────────
+
+/// Compute `base^(2^t) mod n` by `t` repeated modular squarings.
+///
+/// Equivalent to `base.modpow(&(BigUint::one() << t), n)` but without
+/// materialising the `t`-bit exponent, so memory use is independent of `t`.
+fn repeated_square(base: &BigUint, t: u64, n: &BigUint) -> BigUint {
+    let mut acc = base % n;
+    for _ in 0..t {
+        acc = (&acc * &acc) % n;
+    }
+    acc
 }
 
 // ─── Extended Euclidean / modular inverse ────────────────────────────────────

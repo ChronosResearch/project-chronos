@@ -62,11 +62,26 @@ Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (releas
 
 **VDF — Wesolowski over RSA-2048**
 
-| T (steps) | Wall time | Squarings/sec |
-|-----------|-----------|---------------|
-| 1,000 | 12 s | 83 |
-| 10,000 | 16 s | 603 |
-| 100,000 | 9.8 s | 10,174 |
+> **Withdrawn pending re-measurement.** The figures previously published here
+> (T=1,000 → 12,092 ms; T=10,000 → 16,595 ms; T=100,000 → 9,828 ms) were real
+> measurements, but of the wrong thing. Wall-clock time was dominated by an
+> O(√n) trial-division primality test inside the Fiat-Shamir challenge
+> derivation — roughly one to two billion modulo operations, with a cost that
+> depends on the hash-derived seed and **not** on `T`. That is why 100× the
+> sequential work appeared to finish faster. Actual squaring work at
+> T=100,000 is on the order of 100–200 ms.
+>
+> The primality test has been replaced with deterministic Miller-Rabin
+> (`is_prime`), which reduces challenge derivation to microseconds. New figures
+> will be published once measured on a clean machine. Reproduce with:
+>
+> ```bash
+> cargo run -p chronos-bench --release
+> ```
+>
+> Expect wall time to grow close to linearly in `T`, with squarings/sec roughly
+> constant across rows. `crates/chronos-vdf/src/wesolowski.rs::test_wall_time_scales_with_t`
+> asserts this and fails if evaluation ever becomes constant-time in `T` again.
 
 **Groth16 Erasure Proof — BN254 (~180k constraints)**
 
@@ -92,7 +107,8 @@ Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (releas
 |-----|--------|
 | FHE evaluation is a stub (byte-reversal) | Inference not cryptographically sound |
 | Groth16 circuit gadgets simulate AES-GCM/Merkle constraints | Proof not binding to actual computation |
-| `certN.bin` falls back to hardcoded RSA-2048 | VDF group order not from MPC ceremony |
+| `certN.bin` falls back to hardcoded RSA-2048 | VDF group order not from MPC ceremony; one fixed public modulus shared by all deployments |
+| Blind VDF saves the client no sequential work | Client must do T squarings to build `r^(2^T)`; outsourcing goal unmet as specified |
 | MPC trusted setup is simulated (3-party local) | Toxic waste not distributed across real parties |
 | `F_OS` axiomatized, not reduced to hardware attestation | Strongest security claim unproven |
 | mTLS not enforced by axum server | Plain HTTP in default config |

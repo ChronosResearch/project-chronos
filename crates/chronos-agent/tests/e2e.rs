@@ -1,7 +1,8 @@
 /// Full lifecycle integration tests for the CHRONOS agent.
 ///
-/// STEP 19 – VDF uses T=10 in debug builds via `#[cfg(debug_assertions)]`
-///           compile-time flag inside `WesolowskiVdf::evaluate`.
+/// STEP 19 – VDF honours `T` exactly in all build profiles. The previous
+///           `#[cfg(debug_assertions)]` clamp to T=10 has been removed, so these
+///           tests use deliberately small `T` values to stay fast.
 ///
 /// STEP 20 – Tests the full crypto handshake: FHE keys → VDF → HKDF → erasure.
 ///
@@ -45,13 +46,13 @@ async fn test_full_lifecycle_handshake() {
         "FheEngine must have non-zero size"
     );
 
-    // ── 2. VDF (T=10 in debug via #[cfg(debug_assertions)]) ──────────────────
+    // ── 2. VDF (T=100, honoured exactly in every build profile) ──────────────
     let vdf = WesolowskiVdf;
     let g = BigUint::from(2u32);
     let n = BigUint::from(257u32);
     let (y, proof) = vdf
-        .evaluate(&g, 100, &n) // effective_t = min(100, 10) = 10 in debug
-        .expect("VDF evaluate must succeed in debug mode");
+        .evaluate(&g, 100, &n)
+        .expect("VDF evaluate must succeed");
 
     assert!(vdf.verify(&g, &y, &proof, 100, &n), "VDF verify must succeed");
     println!("VDF output y = {y}");
