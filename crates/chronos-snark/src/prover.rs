@@ -1,12 +1,22 @@
 /// Real Groth16 prover, simulated 3-party MPC trusted setup, and Dynark incremental updater.
 ///
-/// Uses `ark-groth16` over BN254 to generate and verify 192-byte erasure proofs.
+/// Uses `ark-groth16` over BN254 to generate and verify erasure proofs.
+/// Compressed proof size is 128 bytes (2 × G1 at 32 bytes, 1 × G2 at 64).
 ///
-/// # Trusted Setup — Simulated 3-Party MPC
-/// A real deployment requires a Powers-of-Tau ceremony where ≥1 party is honest.
-/// This implementation simulates a 3-party ceremony: each party contributes
-/// independent randomness; the toxic waste is the sum of all three contributions.
-/// No single party's RNG output is sufficient to reconstruct the trapdoor.
+/// # Trusted setup — NOT a multi-party ceremony
+///
+/// [`mpc_ceremony_rng`] XOR-folds entropy from three RNGs, but all three run in
+/// this process on this machine. There is one party, and it holds the trapdoor.
+/// This provides **no** ceremony security: whoever runs setup can forge proofs.
+///
+/// Earlier documentation claimed the toxic waste was recoverable only if all
+/// three parties colluded and that one honest party guaranteed security. That is
+/// false as implemented — there are not three parties.
+///
+/// It is adequate for local development, where the same process proves and
+/// verifies. Any deployment where the verifier does not trust the prover needs a
+/// real Powers-of-Tau ceremony with independent participants on separate
+/// machines (Zcash Sapling and Hermez are the usual references).
 use ark_bn254::{Bn254, Fr};
 use ark_crypto_primitives::snark::SNARK;
 use ark_groth16::{
@@ -37,15 +47,17 @@ impl MpcContribution {
     }
 }
 
-/// Simulate a 3-party MPC trusted setup ceremony.
+/// Derive a setup RNG by XOR-folding three local entropy draws.
 ///
-/// Each of the 3 parties generates independent entropy. The final RNG seed
-/// is derived by XOR-folding all three contributions. The toxic waste
-/// (trapdoor) is only recoverable if ALL three parties collude — a single
-/// honest party guarantees security.
+/// # This is not multi-party
 ///
-/// In production this would be replaced by a real Powers-of-Tau ceremony
-/// (e.g., Zcash Sapling, Hermez, or a project-specific ceremony).
+/// All three draws come from this process. XOR-folding several RNGs on one
+/// machine adds no security property that a single `StdRng::from_entropy()`
+/// lacks — the resulting trapdoor is known to whoever runs it. The three-way
+/// split mirrors the *shape* of a ceremony, not its security.
+///
+/// Replace with a real Powers-of-Tau ceremony before any deployment where the
+/// verifier does not trust the prover.
 pub fn mpc_ceremony_rng() -> StdRng {
     let p1 = MpcContribution::generate();
     let p2 = MpcContribution::generate();
@@ -218,7 +230,7 @@ pub struct WitnessDelta {
 ///
 /// Maintains a proof and supports O(|Δw|) updates when witnesses change.
 /// Primary use case: re-attestation when a new drand beacon updates the salt,
-/// without re-proving the full 180,000-constraint circuit.
+/// without re-proving the full circuit.
 pub struct DynarkUpdater {
     prover: Groth16Prover,
     current_proof: Option<Vec<u8>>,
@@ -278,9 +290,11 @@ impl DynarkUpdater {
 
     /// Incrementally update the proof when only the salt changes.
     ///
-    /// Complexity: O(HKDF_POSEIDON_CONSTRAINTS) ≈ O(20,000) vs O(180,000)
-    /// for a full re-prove. In a full Dynark implementation this would patch
-    /// only the HKDF gadget constraints; here we re-prove correctly.
+    /// NOTE: this is not currently an incremental update — it re-proves the
+    /// whole circuit. A real Dynark implementation would patch only the Poseidon
+    /// gadget constraints affected by the new salt. The name and the O(|Δw|)
+    /// claim in this module's docs describe the intended design, not the
+    /// present behaviour.
     pub fn update_salt(&mut self, new_salt: Vec<u8>) -> ChronosResult<Vec<u8>> {
         if self.current_proof.is_none() {
             return Err(ChronosError::Snark(

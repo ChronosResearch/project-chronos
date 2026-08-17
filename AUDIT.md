@@ -107,3 +107,31 @@ If `chronos-agent` crashes:
 2. Core dumps are blocked (`LimitCORE=0` + `prctl(PR_SET_DUMPABLE, 0)`).
 3. If the mission already reached `Erased`, exit code is 0 — systemd won't restart.
 4. To re-run: re-provision `certN.bin` and `ct_sk.bin`, then restart.
+
+
+---
+
+## SNARK circuit audit (2026-08-17)
+
+| # | Bug | Severity | File | Fix |
+|---|-----|----------|------|-----|
+| 31 | Gadgets 1, 3 and 4 were `while count < TARGET` loops emitting filler multiplications to reach a hardcoded count. Encoded no VDF verification, no AES-GCM, no SHA-256. ~160,000 of ~180,000 constraints were padding. | Critical | `circuit.rs` | Filler removed. Circuit is now ~700 real constraints. |
+| 32 | `aes_gcm_gadget` terminated in `sk[0] * 1 = sk[0]` — a tautology constraining nothing. | Critical | `circuit.rs` | Gadget removed rather than faked; gap documented. |
+| 33 | `merkle_zero_gadget` derived its "expected wipe pattern" public input *from the witness it was checking*, reducing the check to `sk[0] == sk[0]`. Only 1 of 32 bytes was referenced. | Critical | `circuit.rs` | `WIPE_PATTERN` is now a compile-time constant public input; all 32 bytes enforced against it. |
+| 34 | Poseidon squeeze emitted 32 **unconstrained** witness variables. | High | `circuit.rs` | Each output now constrained as `lane + y[i]`. |
+| 35 | `IdentityCircuit` computed `y[0]*mid[0]` and `root_pub*mid_pub` into separate witnesses and never constrained them equal — no binding to either public input existed. | Critical | `identity_circuit.rs` | Mission-ID binding enforced directly. Pre-image relation documented as unencoded. |
+| 36 | `IdentityCircuit` padded to 10,000 constraints described as a SHA-256 pre-image proof. | Critical | `identity_circuit.rs` | Filler removed; circuit is now 1 real constraint with the gap stated. |
+| 37 | `mpc_ceremony_rng` documented as 3-party MPC where "a single honest party guarantees security". All three RNGs run in one process; there is one party and it holds the trapdoor. | Critical (docs) | `prover.rs` | Documentation corrected to state no ceremony security is provided. |
+| 38 | Proof size documented as 192 bytes; compressed Groth16 on BN254 is 128. | Low | `prover.rs` | Corrected. |
+| 39 | `DynarkUpdater::update_salt` documented as O(20,000) incremental update; it re-proves the whole circuit. | Medium (docs) | `prover.rs` | Documentation corrected. |
+
+**Constraint count is now a regression guard, not a target.** `test_constraint_count_is_real`
+asserts the erasure circuit stays in the 500–2,000 range and the identity circuit
+under 100. The previous tests asserted `>= 150_000` and `>= 9_000`, which
+validated the padding rather than any computation.
+
+**Remaining gaps in the erasure proof**, unchanged by this pass and tracked in the
+README: `ct_sk` → `sk` decryption is not encoded (fix is Poseidon-based AEAD, not
+an AES gadget); `m_pre` is not bound to a verifier-held commitment, so the proof
+attests that *a* buffer was zeroized rather than that *the* key was; the trusted
+setup is single-party.
