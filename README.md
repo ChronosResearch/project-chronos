@@ -25,6 +25,7 @@ crates/
 | Component | State |
 |---|---|
 | FHE key generation (`tfhe-rs`) | Working |
+| FHE inference — two-layer MLP over `FheInt64` | Working — dot product + ReLU via comparison/select, verified against a plaintext reference |
 | Wesolowski VDF (pure `num-bigint`, RSA-2048) | Working |
 | AES-256-GCM decryption of `ct_sk` | Working |
 | HKDF-SHA256 key derivation (RFC 5869) | Working |
@@ -45,7 +46,7 @@ crates/
 | mlock on all secret-bearing pages | Working |
 | Prometheus metrics | Working |
 | Graceful shutdown (SIGTERM/Ctrl-C) | Working |
-| FHE evaluation circuit | Stub — byte-reversal placeholder |
+| FHE evaluation circuit | Working — replaces the former byte-reversal stub |
 | mTLS client certificate enforcement | Config validated, not enforced by axum |
 
 ## Build
@@ -110,7 +111,9 @@ Run with `cargo run -p chronos-bench --release`. Results on Linux x86_64 (releas
 
 | Gap | Impact |
 |-----|--------|
-| FHE evaluation is a stub (byte-reversal) | Inference not cryptographically sound |
+| `/infer` uses `bincode::deserialize` on untrusted bytes | Payload is size-capped, but this is not a hardened parser; replace with `tfhe::safe_serialization` before exposing the endpoint |
+| `FheInt64` wraps silently on overflow | Real trained weights can overflow intermediate sums with no error; weight magnitude and layer width must be bounded |
+| MLP verified only at toy scale | Two inputs, two hidden units. No accuracy or latency data at real model sizes; one PBS per hidden unit is the dominant cost |
 | Erasure proof binds a prover-supplied buffer | Proves *a* buffer was zeroized, not that *the* key was; needs a verifier-held pre-wipe commitment |
 | `ct_sk` → `sk` decryption not encoded in-circuit | Proof does not tie the wiped buffer to the time-locked ciphertext; fix is Poseidon-based AEAD, not an AES gadget |
 | EAIP pre-image relation not encoded | `SHA-256(y) == R` unproven, so EAIP is a mission-ID commitment rather than a ZK identity proof |
