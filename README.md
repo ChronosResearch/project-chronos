@@ -14,7 +14,7 @@ A Rust prototype of the CHRONOS protocol. An AI agent encrypts its secret key un
 crates/
 ├── chronos-core    # shared types, errors, mlock/wipe, FHE engine, MPC cert
 ├── chronos-vdf     # Wesolowski VDF, Blind VDF, PoSW hash-chain
-├── chronos-snark   # Groth16 erasure circuit, identity circuit, Dynark updater
+├── chronos-snark   # Groth16 erasure circuit, identity circuit, Dynark updater, EVM export
 ├── chronos-bench   # benchmark binary (VDF timing, proof latency, memory)
 ├── chronos-ffi     # reserved FFI boundary (not active)
 └── chronos-agent   # HTTP API, orchestration, EAIP, signal handling
@@ -34,6 +34,7 @@ crates/
 | Groth16 trusted setup | Local only — single party holds the trapdoor, not a ceremony |
 | EAIP identity proof | Partial — binds mission ID; `SHA-256(y) == R` not encoded |
 | In-circuit VDF verification | Not encoded — verified natively outside the SNARK instead |
+| On-chain erasure verification | Contracts written, unaudited, not yet deployed or compiled in CI — see `contracts/` |
 | In-circuit AES-GCM decryption | Not encoded |
 | ML-DSA (Dilithium3) PQ identity signing | Working |
 | BLS12-381 drand signature verification | Working |

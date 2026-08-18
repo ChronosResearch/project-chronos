@@ -135,3 +135,29 @@ README: `ct_sk` → `sk` decryption is not encoded (fix is Poseidon-based AEAD, 
 an AES gadget); `m_pre` is not bound to a verifier-held commitment, so the proof
 attests that *a* buffer was zeroized rather than that *the* key was; the trusted
 setup is single-party.
+
+
+---
+
+## On-chain verification (2026-08-18)
+
+| # | Change | File |
+|---|--------|------|
+| 44 | Added a Solidity Groth16 verifier using the EVM `alt_bn128` precompiles, so erasure attestations can be checked by any Ethereum node rather than by a server the verifier must trust. | `contracts/Groth16Verifier.sol` |
+| 45 | Added an append-only attestation registry: one record per mission, replay-resistant, reverting rather than returning false so a failed attestation cannot be mistaken for a successful one. | `contracts/ChronosRegistry.sol` |
+| 46 | Added the EVM export path. `verifying_key_bytes()` returns arkworks' little-endian encoding, which the EVM cannot consume; `export_verifying_key` emits big-endian 32-byte words and swaps Fp2 coordinates to the `[c1, c0]` order the pairing precompile expects. Both are standard causes of a verifier that deploys cleanly then rejects every valid proof. | `solidity.rs` |
+| 47 | Added `Groth16Prover::verifying_key()` to borrow the raw key, since only the serialized form was previously reachable. | `prover.rs` |
+| 48 | Added `export_solidity` example that generates a setup, prints constructor arguments, and emits a sample proof — verified natively first, so an on-chain failure isolates to the encoding rather than the proof. | `examples/export_solidity.rs` |
+
+**Scope of what on-chain verification adds.** An accepted proof shows someone knew
+a witness satisfying the erasure circuit under the deployed key. It does not show
+the agent was contained. The trusted setup remains single-party, so the setup
+operator can forge proofs that verify on-chain; the circuit still binds a
+prover-supplied buffer; decryption is still not encoded. Publishing on-chain
+removes the need to trust the operator's *claim*, not the need to trust the
+*ceremony*. What it adds unconditionally: immutability, public timestamps, replay
+resistance, and a revision-proof audit trail.
+
+**Not verified.** The Solidity is unaudited, has not been compiled, and has not
+been tested against a live EVM. The Rust export path has not been compiled in
+this environment either.

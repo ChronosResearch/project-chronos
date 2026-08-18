@@ -112,6 +112,21 @@ impl Groth16Prover {
         Ok(())
     }
 
+    /// Borrow the raw verifying key.
+    ///
+    /// Needed by [`crate::solidity::export_verifying_key`] to emit EVM
+    /// constructor arguments; `verifying_key_bytes` returns arkworks' own
+    /// little-endian encoding, which the EVM cannot consume directly.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::Snark`] if keys have not been generated.
+    pub fn verifying_key(&self) -> ChronosResult<&ark_groth16::VerifyingKey<Bn254>> {
+        let pk = self.pk.as_ref().ok_or_else(|| {
+            ChronosError::Snark("Proving key not loaded — call generate_keys first".into())
+        })?;
+        Ok(&pk.vk)
+    }
+
     /// Serialize the verifying key to bytes.
     pub fn verifying_key_bytes(&self) -> ChronosResult<Vec<u8>> {
         let pk = self.pk.as_ref().ok_or_else(|| {
