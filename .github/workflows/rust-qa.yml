@@ -22,6 +22,19 @@ jobs:
   # TIER 1 — HARD GATES  (failures block the PR merge)
   # ════════════════════════════════════════════════════════════════════════════
 
+  repo-hygiene:
+    name: "🧹 Repo hygiene"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guards against unanchored .gitignore patterns silently excluding standard
+      # Cargo layouts. `tests/` without a leading slash matches crates/*/tests/ at
+      # any depth, so an added integration test would never be committed — and CI
+      # would pass, because the file does not exist in the repository.
+      - name: Standard Cargo paths must be committable
+        run: ./scripts/check_gitignore.sh
+
   build:
     name: "🔨 Build (debug)"
     runs-on: ubuntu-latest
@@ -209,7 +222,7 @@ jobs:
 
   ci-gate:
     name: "🚦 All required checks passed"
-    needs: [build, test, release-build]
+    needs: [build, test, release-build, repo-hygiene]
     runs-on: ubuntu-latest
     if: always()
     steps:
