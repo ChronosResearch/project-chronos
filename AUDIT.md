@@ -139,6 +139,24 @@ setup is single-party.
 
 ---
 
+## FHE inference (2026-08-17)
+
+| # | Change | File |
+|---|--------|------|
+| 40 | `evaluate_ciphertext` returned `ct` with its bytes reversed. No homomorphic work, no confidentiality — a development placeholder that the README and paper both described as an FHE evaluation path. | `fhe.rs` |
+| 41 | Replaced with a real two-layer MLP over `FheInt64`: homomorphic dot product with cleartext signed weights, ReLU via encrypted comparison and select. Signed throughout because a dot product with real trained weights goes negative, which is the case ReLU exists to handle. | `mlp.rs`, `fhe.rs` |
+| 42 | Added a payload size cap before `bincode::deserialize` on `/infer` input. `bincode` reads a length prefix before allocating, which is an allocation primitive on attacker-controlled bytes. | `fhe.rs` |
+| 43 | Model weights moved behind `install_weights` with shape validation, so a malformed model fails at load rather than mid-inference. | `fhe.rs`, `mlp.rs` |
+
+**Not closed by this change:** `bincode` is still not a hardened parser for
+adversarial input — `tfhe::safe_serialization` should replace it before `/infer`
+is exposed to untrusted clients. `FheInt64` wraps silently on overflow. The MLP
+is verified at toy scale only (2 inputs, 2 hidden units); there is no accuracy or
+latency data at real model sizes, and one PBS per hidden unit will dominate
+inference cost.
+
+---
+
 ## On-chain verification (2026-08-18)
 
 | # | Change | File |
@@ -161,3 +179,10 @@ resistance, and a revision-proof audit trail.
 **Not verified.** The Solidity is unaudited, has not been compiled, and has not
 been tested against a live EVM. The Rust export path has not been compiled in
 this environment either.
+## Development process
+
+This codebase is developed with AI assistance, including bug identification and
+patch authoring in the VDF, SNARK and FHE modules. All changes are reviewed,
+built and merged by the author. Where a fix was produced with assistance and
+validated by a test run, the test output is the claim being made — not the
+authorship of the diff.

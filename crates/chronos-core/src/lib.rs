@@ -1,6 +1,7 @@
 pub mod error;
 pub mod fhe;
 pub mod memory;
+pub mod mlp;
 pub mod mpc;
 pub mod redacted;
 pub mod wipe;
