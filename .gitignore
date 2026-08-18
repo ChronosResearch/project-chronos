@@ -132,7 +132,10 @@ python/
 security/
 tests/
 test/
-contracts/
+# NOTE: `contracts/` was ignored here as part of the legacy Python-era prototype.
+# It is now first-class source (Groth16 verifier + attestation registry) and is
+# tracked. Solidity *build output* is still ignored above via `artifacts/` and
+# `cache/`.
 scripts/deploy.js
 hardhat.config.js
 chronos-bot/

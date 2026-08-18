@@ -18,6 +18,8 @@ ark-r1cs-std             = "0.4.0"
 ark-crypto-primitives    = { version = "0.4.0", features = ["crh", "merkle_tree", "commitment", "prf"] }
 ark-std                  = "0.4.0"
 ark-serialize            = "0.4.2"
+# Curve/group traits (AffineRepr, CurveGroup) used by the EVM export path.
+ark-ec                   = "0.4.0"
 
 # ── GMP (optional, x86_64 only — chronos-vdf uses pure-Rust num-bigint fallback) ──
 # gmp-mpfr-sys = "1.7.1"
