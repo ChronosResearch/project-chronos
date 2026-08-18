@@ -107,9 +107,13 @@ third_party/
 /bin/
 *.bin
 
-# ── Contract ABIs and build artifacts (Hardhat) ──────────────────────────────
+# ── Contract build artifacts ─────────────────────────────────────────────────
+# `artifacts/` and `cache/` are Hardhat; `out/` is Foundry's default output dir,
+# set explicitly in foundry.toml. Root-anchored so `out/` cannot swallow a future
+# `crates/*/out/`.
 artifacts/
 cache/
+/out/
 
 # ── Benchmarks and profiling output ──────────────────────────────────────────
 perf.data
