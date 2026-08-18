@@ -18,3 +18,10 @@ num-bigint            = { workspace = true }
 thiserror             = { workspace = true }
 rand                  = { workspace = true }
 sha2                  = { workspace = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+
+[dev-dependencies]
+# The lifecycle integration test performs real sequential squarings, because the
+# claim under test is that the agent recovers the key only by doing that work.
+chronos-vdf = { path = "../chronos-vdf" }

@@ -25,7 +25,13 @@ ark-bn254                = "0.4.0"
 ark-ff                   = "0.4.2"
 ark-relations            = "0.4.0"
 ark-r1cs-std             = "0.4.0"
-ark-crypto-primitives    = { version = "0.4.0", features = ["crh", "merkle_tree", "commitment", "prf"] }
+# `sponge` supplies the Poseidon permutation with Grain-LFSR round constants and a
+# Cauchy MDS matrix; `r1cs` supplies the matching `PoseidonSpongeVar` gadget. Both
+# are required: CHRONOS proves the same Poseidon relation natively (to build the
+# public commitments) and in-circuit (to prove knowledge of the pre-image), and the
+# two must be bit-identical or every proof fails. `chronos_snark::poseidon`'s
+# `test_native_and_gadget_agree` pins that.
+ark-crypto-primitives    = { version = "0.4.0", features = ["crh", "merkle_tree", "commitment", "prf", "sponge", "r1cs"] }
 ark-std                  = "0.4.0"
 ark-serialize            = "0.4.2"
 # Curve/group traits (AffineRepr, CurveGroup) used by the EVM export path.
@@ -56,6 +62,9 @@ pqcrypto-traits    = "0.3.5"
 zeroize    = { version = "1.8.1", features = ["derive"] }
 sha2       = "0.10.9"
 hkdf       = "0.12.4"
+# Request authentication. `Hmac::verify_slice` is a constant-time comparison,
+# which is why the agent uses it rather than comparing MAC bytes with `==`.
+hmac       = "0.12.1"
 libc       = "0.2.189"
 hex        = "0.4.3"
 num-bigint = { version = "0.4.8", features = ["rand"] }

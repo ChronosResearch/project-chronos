@@ -1,177 +1,230 @@
-/// Full lifecycle integration tests for the CHRONOS agent.
-///
-/// STEP 19 – VDF honours `T` exactly in all build profiles. The previous
-///           `#[cfg(debug_assertions)]` clamp to T=10 has been removed, so these
-///           tests use deliberately small `T` values to stay fast.
-///
-/// STEP 20 – Tests the full crypto handshake: FHE keys → VDF → HKDF → erasure.
-///
-/// STEP 21 – Concurrent FFI torture test: 10 tasks simultaneously call VDF.
-use chronos_agent::{
-    crypto::derive_k_enc,
-    erasure::prove_erasure,
-    state::{AgentState, StateMachine},
-};
-use chronos_core::{
-    fhe::FheEngine,
-    redacted::Redacted,
-    wipe::secure_wipe,
-    VdfEngine,
-};
-use chronos_vdf::wesolowski::WesolowskiVdf;
-use num_bigint::BigUint;
+//! Agent-level integration tests.
+//!
+//! # Scope
+//!
+//! The cryptographic lifecycle — provisioning, sequential work, sealing, opening,
+//! proving, verifying — is covered end to end by
+//! `chronos-snark/tests/lifecycle.rs`, which crosses the provisioner/agent trust
+//! boundary properly. Duplicating it here would only mean two places to update.
+//!
+//! What this file covers is the agent-specific surface that has no home in a unit
+//! test because it spans modules: request authentication composed with replay
+//! protection, and the containment monitor composed with the lifecycle state
+//! machine.
+//!
+//! The previous version of this file tested `derive_k_enc` (HKDF, now removed),
+//! `prove_erasure` from `erasure.rs` (a SHA-256 sanity check, now removed), and a
+//! VDF "concurrency torture test" whose comment referred to GMP FFI state that the
+//! pure-Rust backend does not have. All three tested code that no longer exists or
+//! properties that were never at risk.
+
+use chronos_agent::crypto::{request_mac, verify_request_mac, AUTH_KEY_BYTES};
+use chronos_agent::state::{spawn_watchdog, AgentState, StateMachine};
+use chronos_agent::tls::NonceCache;
+use chronos_core::containment::{Decision, Event};
 use std::sync::Arc;
 
-// ─── STEP 20: Full Cryptographic Handshake ───────────────────────────────────
+const KEY: [u8; AUTH_KEY_BYTES] = [0x11u8; AUTH_KEY_BYTES];
 
-/// Exercises the full Agent lifecycle without a running HTTP server:
-/// 1. FHE key generation
-/// 2. VDF evaluation (T=10 in debug via cfg flag)
-/// 3. HKDF derivation of K_enc
-/// 4. Memory erasure proof
-#[tokio::test]
-async fn test_full_lifecycle_handshake() {
-    // ── 1. FHE keys ──────────────────────────────────────────────────────────
-    let fhe = FheEngine::new();
-    tokio::task::spawn_blocking({
-        let fhe = fhe.server_key_handle(); // just borrow the arc to confirm it compiles
-        move || drop(fhe)
-    })
-    .await
-    .expect("spawn_blocking must not panic");
-
-    // Measure struct sizes (STEP 20).
-    assert!(
-        std::mem::size_of::<FheEngine>() > 0,
-        "FheEngine must have non-zero size"
-    );
-
-    // ── 2. VDF (T=100, honoured exactly in every build profile) ──────────────
-    let vdf = WesolowskiVdf;
-    let g = BigUint::from(2u32);
-    let n = BigUint::from(257u32);
-    let (y, proof) = vdf
-        .evaluate(&g, 100, &n)
-        .expect("VDF evaluate must succeed");
-
-    assert!(vdf.verify(&g, &y, &proof, 100, &n), "VDF verify must succeed");
-    println!("VDF output y = {y}");
-
-    // ── 3. HKDF derivation ───────────────────────────────────────────────────
-    let salt = [0xBEu8; 32];
-    let k_enc = derive_k_enc(&y, &salt).expect("HKDF must not fail");
-    let _k_enc_redacted = Redacted::new(&k_enc); // STEP 11: logs would show [REDACTED]
-    assert_ne!(k_enc, [0u8; 32], "K_enc must not be all-zero");
-
-    // ── 4. Memory erasure ─────────────────────────────────────────────────────
-    let mut sk_buf = vec![0xDEu8; 64];
-    let m_pre = sk_buf.clone(); // snapshot before wipe
-    // SAFETY: sk_buf is alive, ptr valid, no concurrent access.
-    unsafe { secure_wipe(sk_buf.as_mut_ptr(), sk_buf.len()); }
-    let erasure_proof = prove_erasure(&sk_buf, &m_pre, &y).expect("Erasure proof must succeed");
-    assert_eq!(erasure_proof.len(), 32, "SHA-256 root must be 32 bytes");
-
-    println!("Full lifecycle test PASSED");
+fn sm() -> Arc<StateMachine> {
+    // Small budgets so exhaustion is reachable inside a test.
+    StateMachine::new(3, 128, 3600)
 }
 
-// ─── STEP 16: Double-Init Guard ──────────────────────────────────────────────
+// ─── Authentication composed with replay protection ──────────────────────────
 
-#[tokio::test]
-async fn test_double_init_rejected() {
-    let sm = StateMachine::new();
-    sm.arm_to_active().await.expect("First init must succeed");
-    let err = sm.arm_to_active().await.expect_err("Second init must fail");
+/// The two controls are independent and both required. A valid MAC on a replayed
+/// nonce must still be refused, otherwise a captured request could be resent
+/// indefinitely.
+#[test]
+fn test_valid_mac_does_not_excuse_a_replayed_nonce() {
+    let mut cache = NonceCache::new(16);
+    let nonce = "0123456789abcdef01234567";
+    let mac = hex::encode(request_mac(&KEY, "POST", "/mission/init", nonce, b""));
+
+    // First use: MAC valid, nonce fresh.
+    verify_request_mac(&KEY, "POST", "/mission/init", nonce, b"", &mac).expect("MAC must verify");
+    let mut raw = [0u8; 12];
+    raw.copy_from_slice(&hex::decode(nonce).expect("hex"));
+    assert!(cache.check_and_insert(&raw), "first use must be accepted");
+
+    // Second use: MAC is still valid — it is the nonce cache that must reject.
+    verify_request_mac(&KEY, "POST", "/mission/init", nonce, b"", &mac)
+        .expect("the MAC is unchanged and still valid");
     assert!(
-        err.to_string().contains("already initialised"),
-        "Error must mention double-init: {err}"
+        !cache.check_and_insert(&raw),
+        "a replayed nonce must be refused even with a valid MAC"
     );
 }
 
-// ─── STEP 17: Watchdog Timeout ───────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_watchdog_forces_erased() {
-    use chronos_agent::state::spawn_watchdog;
-    let sm = StateMachine::new();
-    sm.arm_to_active().await.expect("First init must succeed in test setup");
-
-    // Watchdog with 1-second timeout.
-    spawn_watchdog(Arc::clone(&sm), 1);
-
-    // Wait for the notify (fired by force_erased).
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(3),
-        sm.erased_notify.notified(),
-    )
-    .await
-    .expect("Watchdog must fire within 3 seconds");
-
-    assert_eq!(sm.current().await, AgentState::Erased);
+/// A fresh nonce does not excuse a missing or wrong MAC. This is the hole the old
+/// middleware had: it checked only nonce freshness, so any caller could reach
+/// every endpoint.
+#[test]
+fn test_fresh_nonce_does_not_excuse_a_bad_mac() {
+    let nonce = "ffffffffffffffffffffffff";
+    let forged = hex::encode(request_mac(&[0x22u8; AUTH_KEY_BYTES], "POST", "/mission/init", nonce, b""));
+    assert!(
+        verify_request_mac(&KEY, "POST", "/mission/init", nonce, b"", &forged).is_err(),
+        "a fresh nonce must not admit a request whose MAC was made with another key"
+    );
 }
 
-// ─── STEP 21: Concurrent FFI Torture Test ────────────────────────────────────
+/// Each nonce authenticates exactly one request. Rotating the nonce requires
+/// recomputing the MAC, which requires the key.
+#[test]
+fn test_mac_is_nonce_specific() {
+    let a = "000000000000000000000001";
+    let b = "000000000000000000000002";
+    let mac_a = hex::encode(request_mac(&KEY, "GET", "/status", a, b""));
+    assert!(
+        verify_request_mac(&KEY, "GET", "/status", b, b"", &mac_a).is_err(),
+        "a MAC must not transfer to a different nonce"
+    );
+}
 
-/// Spawn 10 concurrent tasks each running the VDF engine.
-/// Because WesolowskiVdf creates per-call GmpBigInt locals, there is no
-/// shared mutable GMP state and this must complete without panicking.
+// ─── Containment composed with the lifecycle ─────────────────────────────────
+
+/// Inference is admissible only in `Active`, and the ledger records every attempt
+/// — including refusals, so probing is visible in the published attestation.
 #[tokio::test]
-async fn test_vdf_concurrent_10_tasks() {
-    let tasks: Vec<_> = (0..10)
-        .map(|i| {
-            tokio::task::spawn_blocking(move || {
-                let vdf = WesolowskiVdf;
-                let g = BigUint::from(2u32 + i);
-                let n = BigUint::from(257u32);
-                vdf.evaluate(&g, 50, &n)
-            })
-        })
-        .collect();
+async fn test_inference_window_is_enforced_and_recorded() {
+    let s = sm();
+    let infer = Event::Infer { declared_secs: 1, disclosure_bits: 8 };
 
-    for (i, task) in tasks.into_iter().enumerate() {
-        let result = task.await.expect("spawn_blocking must not panic");
+    // Armed: refused.
+    assert!(matches!(s.admit(infer).await, Decision::Deny(_)));
+
+    s.arm_to_active().await.expect("init");
+    assert!(s.admit(infer).await.is_admitted(), "Active must permit inference");
+
+    s.active_to_locked().await.expect("lock");
+    assert!(
+        matches!(s.admit(infer).await, Decision::Deny(_)),
+        "Locked must refuse inference"
+    );
+
+    s.force_erased().await;
+    assert!(matches!(s.admit(infer).await, Decision::Deny(_)));
+
+    // Seven arbitrated events in total: three refused inferences (Armed, Locked,
+    // Erased) and four admitted transitions.
+    assert_eq!(s.ledger_len().await, 7, "every attempt must be recorded");
+    let (admitted, denied) = s.counters().await;
+    assert_eq!(
+        admitted, 4,
+        "MissionInit, one Infer, KeyReleased, and Erase — erasure is itself an admitted event"
+    );
+    assert_eq!(denied, 3, "one refused inference in each of Armed, Locked, Erased");
+    assert_eq!(
+        admitted + denied,
+        s.ledger_len().await,
+        "the ledger must account for every event exactly once"
+    );
+}
+
+/// The operation budget must actually bind, and exhausting it must not be
+/// recoverable by any sequence of requests.
+#[tokio::test]
+async fn test_operation_budget_is_absorbing() {
+    let s = sm(); // op_budget = 3
+    s.arm_to_active().await.expect("init");
+    let infer = Event::Infer { declared_secs: 1, disclosure_bits: 1 };
+
+    for i in 0..3 {
         assert!(
-            result.is_ok(),
-            "Task {i} must succeed: {:?}",
-            result.err()
+            s.admit(infer).await.is_admitted(),
+            "inference {i} must be admitted while budget remains"
         );
     }
-    println!("Concurrent FFI test (10 tasks) PASSED");
-}
-
-// ─── STEP 9: Secure Wipe Volatile Read ───────────────────────────────────────
-
-#[test]
-fn test_wipe_volatile_read_not_optimized() {
-    const SZ: usize = 1024;
-    let mut buf = vec![0xAAu8; SZ];
-    let ptr = buf.as_mut_ptr();
-    // SAFETY: buf is alive, ptr valid, no concurrent access.
-    unsafe { secure_wipe(ptr, SZ); }
-    for i in 0..SZ {
-        // SAFETY: ptr is still valid; secure_wipe does not free memory.
-        let byte = unsafe { std::ptr::read_volatile(ptr.add(i)) };
-        assert_eq!(byte, 0xFF, "Byte {i} must be 0xFF after triple-pass wipe");
+    for _ in 0..5 {
+        assert!(
+            matches!(s.admit(infer).await, Decision::Deny(_)),
+            "an exhausted budget must never replenish"
+        );
     }
 }
 
-// ─── STEP 18: HKDF Determinism ───────────────────────────────────────────────
+/// The property the erasure proof depends on: the containment summary must be
+/// terminal only after erasure. If it were terminal earlier, a live agent could
+/// produce an erasure proof.
+#[tokio::test]
+async fn test_attestable_only_after_erasure() {
+    let s = sm();
+    assert!(!s.containment_summary().await.is_terminal(), "Armed is not terminal");
 
-#[test]
-fn test_hkdf_deterministic_across_calls() {
-    let y = BigUint::from(999_u32);
-    let salt = [0x55u8; 32];
-    let k1 = derive_k_enc(&y, &salt).expect("HKDF must not fail");
-    let k2 = derive_k_enc(&y, &salt).expect("HKDF must not fail");
-    assert_eq!(k1, k2);
+    s.arm_to_active().await.expect("init");
+    assert!(!s.containment_summary().await.is_terminal(), "Active is not terminal");
+
+    s.active_to_locked().await.expect("lock");
+    assert!(!s.containment_summary().await.is_terminal(), "Locked is not terminal");
+
+    s.force_erased().await;
+    assert!(
+        s.containment_summary().await.is_terminal(),
+        "only an erased agent may hold a terminal summary"
+    );
 }
 
-// ─── Memory size accounting (STEP 20) ─────────────────────────────────────────
+/// The watchdog must both erase and abort in-flight sequential work. Erasing
+/// without aborting is what let the old agent report `Erased` while still
+/// squaring with the key resident.
+#[tokio::test]
+async fn test_watchdog_erases_and_aborts() {
+    use std::sync::atomic::Ordering;
 
-#[test]
-fn test_critical_struct_sizes() {
-    use chronos_core::VdfProof;
-    println!("sizeof VdfProof = {}", std::mem::size_of::<VdfProof>());
-    println!("sizeof FheEngine = {}", std::mem::size_of::<FheEngine>());
-    // These are sanity checks; the FHE key itself lives on the heap.
-    assert!(std::mem::size_of::<FheEngine>() < 1024);
+    let s = StateMachine::new(8, 128, 3600);
+    s.arm_to_active().await.expect("init");
+    let abort = s.abort_flag();
+    assert!(!abort.load(Ordering::SeqCst));
+
+    spawn_watchdog(Arc::clone(&s), 1);
+
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(6),
+        s.erased_notify.notified(),
+    )
+    .await
+    .expect("watchdog must fire");
+
+    assert_eq!(s.current().await, AgentState::Erased);
+    assert!(
+        abort.load(Ordering::SeqCst),
+        "the watchdog must signal in-flight work to stop, not merely relabel the state"
+    );
+}
+
+/// Double init must be refused, and the refusal must be recorded rather than
+/// silently ignored.
+#[tokio::test]
+async fn test_double_init_is_refused_and_recorded() {
+    let s = sm();
+    s.arm_to_active().await.expect("first init");
+    assert!(s.arm_to_active().await.is_err(), "second init must fail");
+    assert_eq!(s.current().await, AgentState::Active, "state must not change");
+
+    let (_, denied) = s.counters().await;
+    assert_eq!(denied, 1, "the refused init must appear in the ledger");
+}
+
+/// Every lifecycle transition must advance the ledger chain head, because the
+/// erasure proof commits to it. A transition that left the head unchanged would be
+/// invisible in the attestation.
+#[tokio::test]
+async fn test_every_transition_advances_the_chain() {
+    let s = sm();
+    let mut seen = vec![s.chain_head_hex().await];
+
+    s.arm_to_active().await.expect("init");
+    seen.push(s.chain_head_hex().await);
+    s.active_to_locked().await.expect("lock");
+    seen.push(s.chain_head_hex().await);
+    s.force_erased().await;
+    seen.push(s.chain_head_hex().await);
+
+    for i in 0..seen.len() {
+        for j in (i + 1)..seen.len() {
+            assert_ne!(seen[i], seen[j], "chain heads {i} and {j} must differ");
+        }
+    }
 }

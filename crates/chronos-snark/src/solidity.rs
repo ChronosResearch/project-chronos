@@ -32,8 +32,12 @@ use chronos_core::{ChronosError, ChronosResult};
 /// A field element as a `0x`-prefixed, 32-byte, big-endian hex string.
 pub type Word = String;
 
-/// Number of public inputs the erasure circuit exposes: `y[0]`, `WIPE_PATTERN`.
-pub const ERASURE_PUBLIC_INPUT_COUNT: usize = 2;
+/// Number of public inputs the erasure circuit exposes.
+///
+/// Re-exported from [`crate::circuit`] so the EVM side and the circuit cannot
+/// drift apart. Must equal `PUBLIC_INPUT_COUNT` in
+/// `contracts/Groth16Verifier.sol`.
+pub const ERASURE_PUBLIC_INPUT_COUNT: usize = crate::circuit::PUBLIC_INPUT_COUNT;
 
 /// Encode a base-field element as a 32-byte big-endian hex word.
 fn fq_to_word(f: &Fq) -> Word {
@@ -198,16 +202,60 @@ pub fn export_proof(proof: &Proof<Bn254>) -> ChronosResult<SolidityProof> {
     })
 }
 
-/// Public inputs for the erasure circuit, in the circuit's allocation order.
+/// Convert a serialized proof into EVM encoding.
 ///
-/// The order is part of the verifier ABI and must match both
-/// `ErasureCircuit::generate_constraints` and `Groth16Verifier.verifyProof`.
+/// Exists so callers that only ever hold proof *bytes* — the agent's HTTP layer,
+/// for instance — do not need to depend on `ark-groth16` and `ark-serialize` just
+/// to deserialize and re-encode. Keeping arkworks types inside this crate is what
+/// stops the proof-system choice leaking into the agent.
+///
+/// # Errors
+/// Returns [`ChronosError::Snark`] if the bytes do not deserialize as a
+/// compressed BN254 Groth16 proof, or if any element is the identity.
+pub fn export_proof_bytes(proof_bytes: &[u8]) -> ChronosResult<SolidityProof> {
+    use ark_serialize::CanonicalDeserialize;
+    let proof = Proof::<Bn254>::deserialize_compressed(proof_bytes)
+        .map_err(|e| ChronosError::Snark(format!("proof deserialization failed: {e}")))?;
+    export_proof(&proof)
+}
+
+/// Encode the erasure circuit's public inputs as EVM words, in ABI order.
+///
+/// The order is part of the verifier ABI and must match
+/// [`crate::circuit::PublicInputs::to_vec`],
+/// `ErasureCircuit::generate_constraints`, and `Groth16Verifier.verifyProof`.
+///
+/// Each input is a full-width Poseidon digest. Earlier revisions exposed two
+/// single-byte values here, which meant the on-chain verifier's entire binding to
+/// the VDF was eight bits wide.
 #[must_use]
-pub fn erasure_public_inputs(y_first_byte: u8, wipe_pattern: u8) -> [Word; 2] {
+pub fn erasure_public_inputs(
+    inputs: &crate::circuit::PublicInputs,
+) -> [Word; ERASURE_PUBLIC_INPUT_COUNT] {
+    let v = inputs.to_vec();
+    // `to_vec` returns exactly PUBLIC_INPUT_COUNT elements; index directly so a
+    // future change to the ABI fails to compile rather than silently truncating.
     [
-        format!("0x{:064x}", y_first_byte),
-        format!("0x{:064x}", wipe_pattern),
+        fq_scalar_to_word(v[0]),
+        fq_scalar_to_word(v[1]),
+        fq_scalar_to_word(v[2]),
+        fq_scalar_to_word(v[3]),
+        fq_scalar_to_word(v[4]),
     ]
+}
+
+/// Encode a scalar-field element as a 32-byte big-endian hex word.
+///
+/// Separate from [`fq_to_word`] because public inputs live in the *scalar* field
+/// `Fr`, while curve coordinates live in the *base* field `Fq`. They have
+/// different moduli, and conflating them produces words the pairing precompile
+/// silently misinterprets.
+fn fq_scalar_to_word(f: ark_bn254::Fr) -> Word {
+    let be = f.into_bigint().to_bytes_be();
+    let mut padded = [0u8; 32];
+    let start = 32usize.saturating_sub(be.len());
+    padded[start..].copy_from_slice(&be[be.len().saturating_sub(32)..]);
+    format!("0x{}", hex_encode(&padded))
 }
 
 #[cfg(test)]
@@ -287,13 +335,42 @@ mod tests {
         assert!(g2_to_words(&inf).is_err());
     }
 
+    /// Public inputs must encode as full-width 32-byte words in ABI order.
     #[test]
-    fn test_public_inputs_are_padded_words() {
-        let [a, b] = erasure_public_inputs(0xAB, 0xFF);
-        assert_eq!(a.len(), 66);
-        assert_eq!(b.len(), 66);
-        assert!(a.ends_with("ab"), "y[0] must encode as 0xab, got {a}");
-        assert!(b.ends_with("ff"), "wipe pattern must encode as 0xff, got {b}");
+    fn test_public_inputs_are_padded_words_in_abi_order() {
+        use crate::circuit::PublicInputs;
+        use ark_bn254::Fr;
+
+        let pi = PublicInputs {
+            y_commit: Fr::from(0xAAu64),
+            ct_commit: Fr::from(0xBBu64),
+            sk_commit: Fr::from(0xCCu64),
+            mission_commit: Fr::from(0xDDu64),
+            containment_commit: Fr::from(0xEEu64),
+        };
+        let words = erasure_public_inputs(&pi);
+        assert_eq!(words.len(), ERASURE_PUBLIC_INPUT_COUNT);
+        for w in &words {
+            assert_eq!(w.len(), 66, "each input must be one 32-byte word");
+            assert!(w.starts_with("0x"));
+        }
+        // Order must match `PublicInputs::to_vec`.
+        assert!(words[0].ends_with("aa"), "slot 0 is y_commit, got {}", words[0]);
+        assert!(words[1].ends_with("bb"), "slot 1 is ct_commit");
+        assert!(words[2].ends_with("cc"), "slot 2 is sk_commit");
+        assert!(words[3].ends_with("dd"), "slot 3 is mission_commit");
+        assert!(words[4].ends_with("ee"), "slot 4 is containment_commit");
+    }
+
+    /// The exported public input count must track the circuit, so the Solidity
+    /// verifier's `PUBLIC_INPUT_COUNT` cannot silently fall out of step.
+    #[test]
+    fn test_public_input_count_tracks_the_circuit() {
+        assert_eq!(
+            ERASURE_PUBLIC_INPUT_COUNT,
+            crate::circuit::PUBLIC_INPUT_COUNT
+        );
+        assert_eq!(ERASURE_PUBLIC_INPUT_COUNT, 5);
     }
 
     #[test]
@@ -326,7 +403,7 @@ mod tests {
         let exported = export_verifying_key(&vk).expect("export must succeed");
         assert_eq!(
             exported.public_input_count(),
-            ERASURE_PUBLIC_INPUT_COUNT,
+            2,
             "3 IC points implies 2 public inputs"
         );
 

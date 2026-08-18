@@ -5,35 +5,43 @@ import {Groth16Verifier} from "./Groth16Verifier.sol";
 
 /// @title CHRONOS erasure attestation registry
 /// @notice Public, append-only record of verified erasure attestations. Replaces
-///         "ask the agent's operator whether it wiped" with "check the chain".
+///         "ask the operator whether the agent wiped" with "check the chain".
 ///
-/// @dev SCOPE — read this before citing the contract as a containment guarantee.
+/// @dev SCOPE — read `Groth16Verifier.sol` before citing an entry here as a
+///      containment guarantee. A stored attestation proves that, at `attestedAt`,
+///      someone submitted a proof satisfying the erasure circuit for the recorded
+///      commitments under the deployed verifying key. The load-bearing caveat is
+///      that the trusted setup is presently single-party, so the setup operator can
+///      mint proofs that verify here.
 ///
-///      A stored attestation proves that, at `attestedAt`, someone submitted a
-///      Groth16 proof that satisfied the erasure circuit for `(yFirstByte,
-///      wipePattern)` under the deployed verifying key.
-///
-///      It does not prove the agent was contained. The known gaps are documented
-///      in `Groth16Verifier.sol`; the load-bearing one is that CHRONOS's trusted
-///      setup is presently single-party, so the setup operator can mint proofs
-///      that verify here. On-chain publication removes the need to trust the
-///      *operator's claim*; it does not remove the need to trust the *ceremony*.
-///
-///      What it does provide, unconditionally: immutability, public timestamps,
-///      replay resistance per mission, and an audit trail nobody can quietly
-///      revise after the fact. That is worth having on its own.
+///      What this adds unconditionally: immutability, public timestamps, replay
+///      resistance per mission, and an audit trail nobody can quietly revise.
 contract ChronosRegistry {
     /// @notice One verified erasure attestation.
+    ///
+    /// @dev The five circuit public inputs are stored in full rather than hashed
+    ///      together. An earlier revision stored two single-byte values, which was
+    ///      all the circuit bound at the time; storing the full commitments means a
+    ///      verifier can check an entry against a published `mission_public.json`
+    ///      field by field, and can tell *which* mission an entry refers to without
+    ///      trusting the `missionId` key.
     struct Attestation {
         /// Block timestamp at which the proof was accepted.
         uint64 attestedAt;
-        /// First byte of the VDF output, bound as a circuit public input.
-        uint8 yFirstByte;
-        /// Declared post-wipe byte value (0xFF for CHRONOS's triple-pass wipe).
-        uint8 wipePattern;
-        /// Address that submitted the proof. Informational only — the proof,
-        /// not the sender, is what carries weight.
+        /// Address that submitted the proof. Informational only — the proof, not
+        /// the sender, is what carries weight.
         address attester;
+        /// Poseidon commitment to the VDF output.
+        uint256 yCommit;
+        /// Commitment to the time-locked ciphertext.
+        uint256 ctCommit;
+        /// Commitment to the plaintext secret key, fixed by the provisioner.
+        uint256 skCommit;
+        /// Commitment to the mission identifier.
+        uint256 missionCommit;
+        /// Commitment to the containment summary. Constrained in-circuit to
+        /// describe a run that terminated erased with all capabilities revoked.
+        uint256 containmentCommit;
     }
 
     /// @notice Immutable verifier. A new trusted setup means a new registry.
@@ -48,8 +56,9 @@ contract ChronosRegistry {
     event ErasureAttested(
         bytes32 indexed missionId,
         address indexed attester,
-        uint8 yFirstByte,
-        uint8 wipePattern,
+        uint256 yCommit,
+        uint256 skCommit,
+        uint256 containmentCommit,
         uint64 attestedAt
     );
 
@@ -64,21 +73,19 @@ contract ChronosRegistry {
 
     /// @notice Verify an erasure proof and record it permanently.
     ///
-    /// @dev Reverts rather than returning false, so a failed attestation cannot
-    ///      be mistaken for a successful one by a caller ignoring return values.
-    ///      One attestation per `missionId`: a mission erases once, and allowing
+    /// @dev Reverts rather than returning false, so a failed attestation cannot be
+    ///      mistaken for a successful one by a caller ignoring return values. One
+    ///      attestation per `missionId`: a mission erases once, and allowing
     ///      overwrites would let an operator replace an inconvenient record.
     ///
-    /// @param missionId    Mission identifier, typically SHA-256 of the mission string.
-    /// @param yFirstByte   Public input 1 — first byte of the VDF output.
-    /// @param wipePattern  Public input 2 — declared post-wipe byte.
-    /// @param proofA       Groth16 A, as [x, y].
-    /// @param proofB       Groth16 B, as [[x.c1, x.c0], [y.c1, y.c0]].
-    /// @param proofC       Groth16 C, as [x, y].
+    /// @param missionId  Mission identifier, typically SHA-256 of the mission string.
+    /// @param input      The five circuit public inputs, in ABI order.
+    /// @param proofA     Groth16 A, as [x, y].
+    /// @param proofB     Groth16 B, as [[x.c1, x.c0], [y.c1, y.c0]].
+    /// @param proofC     Groth16 C, as [x, y].
     function attestErasure(
         bytes32 missionId,
-        uint8 yFirstByte,
-        uint8 wipePattern,
+        uint256[5] calldata input,
         uint256[2] calldata proofA,
         uint256[2][2] calldata proofB,
         uint256[2] calldata proofC
@@ -88,24 +95,30 @@ contract ChronosRegistry {
             revert AlreadyAttested(missionId);
         }
 
-        uint256[2] memory publicInputs;
-        publicInputs[0] = uint256(yFirstByte);
-        publicInputs[1] = uint256(wipePattern);
-
-        if (!verifier.verifyProof(proofA, proofB, proofC, publicInputs)) {
+        if (!verifier.verifyProof(proofA, proofB, proofC, input)) {
             revert InvalidProof(missionId);
         }
 
         uint64 now64 = uint64(block.timestamp);
         _attestations[missionId] = Attestation({
             attestedAt: now64,
-            yFirstByte: yFirstByte,
-            wipePattern: wipePattern,
-            attester: msg.sender
+            attester: msg.sender,
+            yCommit: input[0],
+            ctCommit: input[1],
+            skCommit: input[2],
+            missionCommit: input[3],
+            containmentCommit: input[4]
         });
         attestationCount += 1;
 
-        emit ErasureAttested(missionId, msg.sender, yFirstByte, wipePattern, now64);
+        emit ErasureAttested(
+            missionId,
+            msg.sender,
+            input[0],
+            input[2],
+            input[4],
+            now64
+        );
     }
 
     /// @notice Whether a mission has a recorded erasure attestation.
@@ -123,17 +136,14 @@ contract ChronosRegistry {
         return _attestations[missionId];
     }
 
-    /// @notice Verify a proof without recording it. Useful for dry runs.
+    /// @notice Verify a proof without recording it. Useful for dry runs before
+    ///         spending gas on a transaction that would revert.
     function checkProof(
-        uint8 yFirstByte,
-        uint8 wipePattern,
+        uint256[5] calldata input,
         uint256[2] calldata proofA,
         uint256[2][2] calldata proofB,
         uint256[2] calldata proofC
     ) external view returns (bool) {
-        uint256[2] memory publicInputs;
-        publicInputs[0] = uint256(yFirstByte);
-        publicInputs[1] = uint256(wipePattern);
-        return verifier.verifyProof(proofA, proofB, proofC, publicInputs);
+        return verifier.verifyProof(proofA, proofB, proofC, input);
     }
 }

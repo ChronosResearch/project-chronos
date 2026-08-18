@@ -27,12 +27,15 @@ clap = { workspace = true }
 
 # Crypto
 sha2       = { workspace = true }
-hkdf       = { workspace = true }
+hmac       = { workspace = true }
 libc       = { workspace = true }
 num-bigint = { workspace = true }
 zeroize    = { workspace = true }
-aes-gcm    = { workspace = true }
 rand       = { workspace = true }
+
+# BN254 field elements, for the public commitments served by /attestation.
+ark-bn254 = { workspace = true }
+ark-ff    = { workspace = true }
 
 # BLS12-381 drand signature verification
 blst = { workspace = true }
