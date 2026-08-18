@@ -102,7 +102,9 @@ PRODUCTION_DEPLOYMENT.md
 third_party/
 
 # ── Binaries committed by mistake ────────────────────────────────────────────
-bin/
+# Root-anchored: an unanchored `bin/` also matches `crates/*/src/bin/`, which is
+# the standard Cargo layout for additional binaries, and would silently drop them.
+/bin/
 *.bin
 
 # ── Contract ABIs and build artifacts (Hardhat) ──────────────────────────────
@@ -128,14 +130,20 @@ interfaces.py
 logger.py
 memory_sanitizer.py
 generate_pdf.py
-python/
-security/
-tests/
-test/
-# NOTE: `contracts/` was ignored here as part of the legacy Python-era prototype.
-# It is now first-class source (Groth16 verifier + attestation registry) and is
-# tracked. Solidity *build output* is still ignored above via `artifacts/` and
-# `cache/`.
+# All root-anchored with a leading slash. Without it, these patterns match a
+# directory of that name at ANY depth, which silently excluded standard Cargo
+# layouts: `tests/` blocked `crates/*/tests/` (integration tests) and `security/`
+# blocked `crates/*/src/security/`. Files already tracked were unaffected, so the
+# breakage only showed up for newly added files — and showed up as CI passing
+# because the test file was never committed.
+/python/
+/security/
+/tests/
+/test/
+# `contracts/` was also ignored here as part of the legacy Python-era prototype.
+# It is now first-class source (Groth16 verifier + attestation registry), so the
+# entry is removed (already applied on main via #58). Solidity *build output*
+# stays ignored above via `artifacts/` and `cache/`.
 scripts/deploy.js
 hardhat.config.js
 chronos-bot/
