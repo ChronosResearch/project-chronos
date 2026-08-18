@@ -178,7 +178,86 @@ impl WesolowskiVdf {
     fn modpow(base: &BigUint, exp: &BigUint, modulus: &BigUint) -> BigUint {
         base.modpow(exp, modulus)
     }
+
+    /// Evaluate with cooperative cancellation.
+    ///
+    /// # Why this exists
+    ///
+    /// [`VdfEngine::evaluate`] runs `2T` sequential squarings with no way to stop
+    /// it. At the configured default of `t_vdf_steps = 1_000_000` that is a long
+    /// uninterruptible block, and the consequence was a real hole in the
+    /// time-bound existence claim: the watchdog would flip the state machine to
+    /// `Erased` on deadline, but the spawned task kept squaring with the secret
+    /// key still live in memory. The agent reported itself erased while holding
+    /// the key.
+    ///
+    /// `abort` is polled every [`ABORT_POLL_INTERVAL`] squarings — often enough
+    /// that cancellation is prompt, rarely enough that the atomic load does not
+    /// measurably slow the inner loop. On cancellation this returns
+    /// [`ChronosError::Vdf`] and the caller must treat the mission as failed and
+    /// erase, rather than retrying.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::Vdf`] if the modulus is degenerate or `abort` is
+    /// set before completion.
+    pub fn evaluate_interruptible(
+        g: &BigUint,
+        t: u64,
+        n: &BigUint,
+        abort: &std::sync::atomic::AtomicBool,
+    ) -> ChronosResult<(BigUint, VdfProof)> {
+        use std::sync::atomic::Ordering;
+
+        if n.is_zero() || n.is_one() {
+            return Err(ChronosError::Vdf("Modulus N must be > 1".into()));
+        }
+        if t == 0 {
+            return Ok((g.clone(), VdfProof { proof: BigUint::one() }));
+        }
+
+        let mut y = g % n;
+        for i in 0..t {
+            if i % ABORT_POLL_INTERVAL == 0 && abort.load(Ordering::Relaxed) {
+                return Err(ChronosError::Vdf(format!(
+                    "VDF aborted after {i} of {t} squarings — watchdog deadline reached"
+                )));
+            }
+            y = (&y * &y) % n;
+        }
+
+        let ell = Self::fiat_shamir_prime(g, &y, t);
+
+        // The proof is another T squarings, so it needs the same cancellation
+        // check. Aborting here still means the mission failed: `y` alone is not
+        // publishable without the proof that it was honestly derived.
+        let g_mod = g % n;
+        let mut pi = BigUint::one() % n;
+        let mut r: u64 = 1 % ell;
+        for i in 0..t {
+            if i % ABORT_POLL_INTERVAL == 0 && abort.load(Ordering::Relaxed) {
+                return Err(ChronosError::Vdf(format!(
+                    "VDF proof aborted after {i} of {t} squarings — watchdog deadline reached"
+                )));
+            }
+            let two_r = u128::from(r) * 2;
+            let b = (two_r / u128::from(ell)) as u64;
+            r = (two_r % u128::from(ell)) as u64;
+            pi = (&pi * &pi) % n;
+            if b == 1 {
+                pi = (pi * &g_mod) % n;
+            }
+        }
+
+        Ok((y, VdfProof { proof: pi }))
+    }
 }
+
+/// Squarings between cancellation checks in [`WesolowskiVdf::evaluate_interruptible`].
+///
+/// A 2048-bit modular squaring is on the order of a microsecond, so 4096 of them
+/// bounds cancellation latency at a few milliseconds while amortising the atomic
+/// load to nothing.
+const ABORT_POLL_INTERVAL: u64 = 4096;
 
 impl VdfEngine for WesolowskiVdf {
     /// Compute `y = g^(2^T) mod N` and produce a Wesolowski proof `π = g^q mod N`.
@@ -405,6 +484,68 @@ mod tests {
                 assert_eq!(got, want, "2^{t} mod {ell}");
             }
         }
+    }
+
+    // ── Cancellation ──────────────────────────────────────────────────────────
+
+    /// With `abort` clear, the interruptible path must agree exactly with
+    /// `evaluate`. If it diverged, the watchdog-safe path would produce proofs
+    /// that fail verification.
+    #[test]
+    fn test_interruptible_matches_evaluate() -> ChronosResult<()> {
+        use std::sync::atomic::AtomicBool;
+
+        let vdf = WesolowskiVdf;
+        let g = BigUint::from(2u32);
+        let n = rsa_modulus();
+        let abort = AtomicBool::new(false);
+
+        for t in [1u64, 2, 37, 500] {
+            let (y_ref, pi_ref) = vdf.evaluate(&g, t, &n)?;
+            let (y, pi) = WesolowskiVdf::evaluate_interruptible(&g, t, &n, &abort)?;
+            assert_eq!(y, y_ref, "output mismatch at T={t}");
+            assert_eq!(pi.proof, pi_ref.proof, "proof mismatch at T={t}");
+            assert!(vdf.verify(&g, &y, &pi, t, &n), "interruptible proof must verify at T={t}");
+        }
+        Ok(())
+    }
+
+    /// The hole this closes: the watchdog must be able to stop the squaring loop.
+    /// Previously it could not, so the agent reported `Erased` while still
+    /// holding the key and squaring.
+    #[test]
+    fn test_abort_stops_evaluation() {
+        use std::sync::atomic::AtomicBool;
+
+        let g = BigUint::from(2u32);
+        let n = rsa_modulus();
+        let abort = AtomicBool::new(true); // already signalled
+
+        let err = WesolowskiVdf::evaluate_interruptible(&g, 10_000_000, &n, &abort)
+            .expect_err("a pre-signalled abort must stop evaluation");
+        assert!(
+            format!("{err}").contains("aborted"),
+            "error must name the abort, got: {err}"
+        );
+    }
+
+    /// Cancellation must be prompt: a huge `T` with abort set must return without
+    /// doing the work. If the poll interval were ignored this would hang.
+    #[test]
+    fn test_abort_is_prompt() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::Instant;
+
+        let g = BigUint::from(2u32);
+        let n = rsa_modulus();
+        let abort = AtomicBool::new(true);
+
+        let start = Instant::now();
+        let _ = WesolowskiVdf::evaluate_interruptible(&g, u64::MAX, &n, &abort);
+        assert!(
+            start.elapsed().as_secs() < 5,
+            "abort must be observed within the first poll interval"
+        );
     }
 
     /// `two_pow_t_mod` must stay `O(log T)` — large `T` must return promptly.

@@ -179,3 +179,31 @@ BENCHMARKS_RUST.md
 .github/workflows/release-please.yml
 .github/workflows/snyk.yml
 .github/workflows/stale.yml
+
+# ── Scratch output from local build/test runs ─────────────────────────────────
+# Debris from redirecting cargo output to files while debugging. Harmless, but it
+# should never reach a commit. `*.log` is already ignored above via the LaTeX
+# section; these cover the `.txt` equivalents.
+#
+# Root-anchored so it cannot swallow `.txt` fixtures inside `crates/`.
+#
+# `memory.txt` is deliberately included in this pattern: it is a local working
+# copy of the paper text, kept on disk for reference. The paper itself is
+# published, so committing a plain-text duplicate to the repo root would only add
+# a second copy to keep in sync.
+/*.txt
+run*.log
+s[0-9]*.log
+t[0-9]*.log
+bench-results.txt
+test-results.txt
+
+# ── Mission artifacts ─────────────────────────────────────────────────────────
+# `ct_sk.bin` and `certN.bin` are named explicitly above; `*.bin` also covers
+# `salt.bin` and the persisted `erasure_pk.bin` proving key, which is large and
+# regenerable. Note that `mission_public.json` is deliberately NOT ignored — it
+# holds only public commitments and is meant to be published alongside the paper.
+/mission/
+erasure_pk.bin
+identity_pk.bin
+operator.key

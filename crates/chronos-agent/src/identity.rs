@@ -13,7 +13,6 @@
 use chronos_core::{memory::LockedBytes, ChronosError, ChronosResult};
 use pqcrypto_dilithium::dilithium3;
 use pqcrypto_traits::sign::{PublicKey, SecretKey, SignedMessage};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
@@ -217,23 +216,11 @@ fn identity_message(root: &[u8], mission_id: &str) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-// ─── Identity Status (for API response) ──────────────────────────────────────
-
-/// Serializable identity status returned by `/identity/proof`.
-#[derive(Serialize)]
-pub struct IdentityStatus {
-    pub mission_id: String,
-    pub expires_at: u64,
-    pub expired: bool,
-    /// Hex-encoded first byte of root (public binding — not the full root).
-    pub root_binding: String,
-    /// Hex-encoded PQ public key.
-    pub pq_public_key: String,
-    /// Hex-encoded ZK identity proof bytes.
-    pub zk_proof: String,
-    /// Hex-encoded PQ signature over the identity root.
-    pub pq_signature: String,
-}
+// `IdentityStatus` was removed. It exposed `root_binding` as
+// `hex::encode([root.first_byte()])` — a single byte of the identity root — which
+// was all the old circuit bound. The root is now a full-width field element and
+// `main.rs` serves it in full via its own response type, so a struct that
+// advertised one byte of it would understate what is actually attested.
 
 #[cfg(test)]
 mod tests {

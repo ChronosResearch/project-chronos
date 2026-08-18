@@ -186,3 +186,164 @@ patch authoring in the VDF, SNARK and FHE modules. All changes are reviewed,
 built and merged by the author. Where a fix was produced with assistance and
 validated by a test run, the test output is the claim being made — not the
 authorship of the diff.
+
+---
+
+## Cryptographic core rewrite (2026-08-18)
+
+This pass closed the gaps left open by the 2026-08-17 SNARK audit and found four
+further defects, three of them in code that the previous audit rows had recorded as
+*fixed*. That pattern is the main lesson from this pass: every module examined had a
+defect its own test suite passed over, because the tests asserted that the code ran
+rather than that it computed the right thing.
+
+### Defects found
+
+| # | Bug | Severity | File | Fix |
+|---|-----|----------|------|-----|
+| 49 | The constant documented as "RSA-2048 from the RSA Factoring Challenge (unfactored as of 2024)" had **618** decimal digits; RSA-2048 has 617. It ended `...207203575` where the genuine value ends `...20720357` — a spurious trailing `5`. The value was therefore `RSA-2048 × 10 + 5`: not the challenge number, no published hardness analysis, **divisible by 5**, and 257 bytes rather than 256. A VDF group modulus with discoverable factors yields `φ(N)`, which collapses sequentiality — the one property CHRONOS exists to provide. Found by a length assertion in a new integration test, not by cryptographic review. | **Critical** | `mpc.rs` | Correct 617-digit value restored. `validate_modulus` now enforces exactly 2048 bits, exactly 256 bytes, and screens 25 small primes. `test_validate_rejects_the_previous_buggy_constant` reconstructs the old value and asserts rejection |
+| 50 | drand verification used `blst::min_pk`, where the public key is a G1 point (48 bytes) and the signature a G2 point (96 bytes). quicknet is `bls-unchained-g1-rfc9380`: key on **G2** (96 bytes), signature on **G1** (48 bytes) — `min_sig` in `blst` terms. `Signature::from_bytes` was handed 48 bytes where it expected 96, so it returned an error on **every** beacon in every build profile. Consequence: `/mission/init` could never complete, because the drand fetch exhausted its retries and aborted the mission | **Critical** | `drand_client.rs` | Switched to `blst::min_sig`. `test_verifies_real_quicknet_beacon` now verifies a genuine mainnet beacon offline |
+| 51 | The BLS message was the raw 8 round bytes. Per drand's `crypto/schemes.go`, the unchained schemes sign `SHA-256(round_be_u64)`. Audit row #16 recorded this as fixed, having changed it in the wrong direction | **Critical** | `drand_client.rs` | `beacon_message()` computes the digest, pinned by `test_message_is_sha256_of_round` |
+| 52 | The invalid-signature return was behind `#[cfg(not(debug_assertions))]`, so under `cargo build` and `cargo test` a forged beacon was **accepted** and its randomness fed to the KDF as salt. This is the same debug-clamp pattern row #28 claims was removed "everywhere" | **Critical** | `drand_client.rs` | Guard removed. `test_invalid_signature_rejected_in_every_build_profile` fails if it returns |
+| 53 | The advertised `randomness` field was decoded and used as the KDF salt without ever being checked against `SHA-256(signature)`. The signature was verified; the field the protocol actually consumes was not. A malicious endpoint could serve a valid signature alongside arbitrary randomness | High | `drand_client.rs` | Both checks are now mandatory; `verified_salt()` is the only way to obtain the salt |
+| 54 | On AEAD failure the protocol loop logged a warning and used `ct_sk` **as the raw key**. Supplying a malformed `ct_sk.bin` therefore bypassed the VDF entirely — the time-lock became decorative | **Critical** | `main.rs` | Fallback removed; decryption failure is fatal |
+| 55 | `sk_plaintext` was cloned into `sk_buf` and again into `m_pre`: three plain `Vec<u8>` copies of the key, of which exactly one was wiped. The other two dropped into the allocator intact and swappable, directly contradicting the `F_OS` axiom that Theorem 2 rests on. `LockedBytes` existed but was used only for the identity root | **Critical** | `main.rs` | The key exists only inside `LockedBytes` and is never cloned |
+| 56 | The erasure proof was generated **after** the wipe, with the wiped buffer passed as the `sk` witness. The circuit attested that erased bytes were erased | **Critical** | `main.rs` | Proof is generated while the key is held, then the witness is dropped. Ordering is now load-bearing and documented |
+| 57 | The VDF ran `4T` squarings for a `T`-step mission: `evaluate` does `2T` (output plus proof), then `generate_identity_root` re-ran the entire VDF | High | `main.rs` | EAIP derives its root from the `y` already computed |
+| 58 | The watchdog set state to `Erased` while the blocking thread kept squaring with the key resident. The agent reported itself erased while holding the secret. `posw.rs` had an abort signal; Wesolowski had none | **Critical** | `wesolowski.rs`, `state.rs` | `evaluate_interruptible` polls an abort flag every 4,096 squarings; the watchdog raises it before transitioning |
+| 59 | `X-Chronos-Nonce` required 24 hex characters — *any* 24 hex characters. It was a replay window, not a credential, so `/mission/init`, `/infer` and `/verify` were reachable by anyone who could open a TCP connection. Starting and aborting a mission were unauthenticated operations | **Critical** | `main.rs`, `crypto.rs` | HMAC-SHA256 over method, path, nonce and body digest under a pre-shared operator key, verified in constant time. Config refuses to start unauthenticated on a non-loopback address |
+| 60 | The trusted setup ran inside `/mission/init`, so the verifying key changed every mission and no third party could ever check a proof. The agent was prover and sole verifier | **Critical** | `main.rs` | Proving key is a persisted artifact; `/attestation` publishes proof, public inputs and verifying key |
+| 61 | Public inputs were two `u8` values (`y[0]`, `wipe_pattern`), giving the on-chain verifier 8 bits of binding to the VDF — forgeable by brute force over 256 candidates | **Critical** | `circuit.rs`, `solidity.rs`, `*.sol` | Five full-width BN254 scalars; `test_public_input_count_tracks_the_circuit` pins the ABI against the Solidity constant |
+| 62 | The "Poseidon x^5 sponge" had no round constants, and its MDS mix summed three lanes into lane 0 while leaving lanes 1–2 untouched — a non-invertible, non-MDS linear layer, trivially open to invariant-subspace attack. Its derived `K_enc` was bound to `let _k_enc = ...` and discarded, so ~650 of ~700 constraints were decorative | **Critical** | `circuit.rs` → `poseidon.rs` | Replaced with `ark-crypto-primitives`' audited Poseidon, Grain-LFSR constants, Cauchy MDS. `test_native_and_gadget_agree` pins native/in-circuit equality; `test_mds_is_cauchy_wellformed` checks the preconditions that make the matrix provably MDS |
+| 63 | `IdentityCircuit` enforced one constraint — `mid_vars[0] == mid_pub` — comparing one byte of a *public* value with itself. `y_vars` was allocated then discarded via `let _ = (&y_vars, root_pub);`. Separately, `identity_proof_handler` passed the root `R` as the `y` argument, so even the intended relation was fed `(R, R)` | **Critical** | `identity_circuit.rs`, `main.rs` | Pre-image relation `Poseidon(y, mission) == R` genuinely encoded, ~1,500 constraints. Root changed from SHA-256 to Poseidon: a **protocol change**, documented, because a SHA-256 pre-image proof costs ~25,000 constraints and is why the previous revisions faked it |
+| 64 | `test_ledger_history_is_bound` asserted a witness-only perturbation makes the circuit unsatisfiable. It cannot: `generate_constraints` derives the public inputs from the witness, so any witness change is self-consistent within one synthesis. The test was structurally incapable of detecting the bug it claimed to guard | Medium (test) | `circuit.rs`, `prover.rs` | Split into a commitment-injectivity test and a proof-level binding test where the verifier supplies inputs independently |
+
+### What was added
+
+| Component | Purpose |
+|---|---|
+| `poseidon.rs` | Poseidon-128 over BN254, native and R1CS, with a test asserting the two produce identical digests. Every commitment in the system is built from it |
+| `aead.rs` | **Chronos-AEAD** — Poseidon encrypt-then-MAC. Replaces AES-256-GCM *for the key-release step only*, so in-circuit decryption costs ~2,000 constraints instead of the tens of thousands an AES gadget needs. AES-GCM remains correct everywhere CHRONOS talks to something else; it was simply the wrong choice at a point where a proof must reason about the decryption |
+| `containment.rs` | **Axiomatic Containment Monitor.** Containment as order-theoretic invariants over a lattice-valued state: capability decay (A1), budget decay (A2), phase irreversibility (A3), deadline dominance (A4), erasure liveness (A5). `verify_axioms` model-checks all five exhaustively over 1,728 abstract states and 19,000 transitions at startup; the agent refuses to boot on violation. A policy bug becomes a startup failure rather than a runtime incident |
+| `mission.rs` | The published mission artifact. Carries the four provisioner-fixed commitments, which is what makes the erasure proof binding rather than self-asserted |
+| `chronos-provision` | The missing third role. Generates the modulus, seals the key, publishes commitments, then wipes `sk` and destroys `φ(N)` |
+| `tests/lifecycle.rs` | End-to-end test across the provisioner/agent boundary with real sequential squarings. Asserts the proof verifies against commitments the agent never chose, and that a fabricated key, an incomplete VDF, and an unerased mission are each unprovable |
+
+### The circuit's claim, restated
+
+The erasure proof now establishes that the prover simultaneously knew: the VDF
+output behind `y_commit`; `K_enc` derived from that exact output via the in-circuit
+KDF; the ciphertext behind `ct_commit`; that it authenticates and decrypts under
+`K_enc`; that the plaintext equals the key behind `sk_commit`; and that the
+containment monitor terminated erased with all capabilities revoked and both
+budgets at zero.
+
+**Proof-carrying containment** — binding the containment summary into the erasure
+attestation, so one record covers both key destruction and capability discipline —
+appears to have no precedent in the ephemeral-agent literature.
+
+**What is still not proven, precisely.** A SNARK constrains values, not memory
+locations, so the prover supplies the post-wipe buffer and could retain a copy of
+the key elsewhere. No circuit can close this. What changed is the size of the
+residual assumption: it is now exactly `F_OS` and nothing more, where previously
+the gap was total — a prover who had never seen the key, the ciphertext or the VDF
+could produce a passing proof.
+
+### Removed
+
+| Module | Reason |
+|---|---|
+| `agent/erasure.rs` | SHA-256 root over the pre-wipe buffer plus a `libc::memcmp` check. Never on the proof path, entirely superseded, and its presence implied a guarantee it did not provide |
+| `agent/vdf_task.rs` | Checked an abort flag once *before* starting, which cannot interrupt squarings already underway. Never called from anywhere |
+| `IdentityStatus` | Exposed `root_binding` as one byte of the identity root — all the old circuit bound. The root is now full-width, so a struct advertising one byte understates what is attested |
+
+### Still open
+
+Unchanged by this pass, and tracked in the README:
+
+- **The trusted setup is single-party.** `SetupTranscript` gives hash-chained,
+  tamper-evident, publishable contributions that can be collected from separate
+  machines — but it combines *seeds*, so whoever runs the final setup call sees the
+  combined seed and can reconstruct the trapdoor. That is not phase-2 ceremony
+  security, and the distinction is stated in `prover.rs`, both contracts, and every
+  `/attestation` response. It is the binding limitation on every verification claim
+  this system makes.
+- **`F_OS` is axiomatized.** Needs TDX or SEV-SNP attestation bound into the
+  public inputs.
+- ~~**`BlindVdf`, `IsogenyVdfSimulator`, `DynarkUpdater` remain present.**~~
+  **Resolved.** All three were deleted later the same day — see *Removal of
+  non-functional contributions* below for why each claim did not hold.
+- **Contracts are uncompiled and unaudited.** No `solc` or `forge` in CI.
+- **Benchmarks are unmeasured.** Both tables withdrawn; causes fixed.
+
+### Method note
+
+Three of the four new critical findings were in code that earlier audit rows
+recorded as fixed (#16 → #51, #28 → #52, #19/#21 → #49). In each case a test
+existed and passed. The tests asserted that a function returned `Ok`, or that a
+constraint count exceeded a threshold, rather than that the computation was
+correct — `test_constraint_count_is_real` previously asserted `>= 150_000`, which
+validated the padding.
+
+The tests added in this pass are written to fail if the *value* is wrong:
+native-versus-gadget digest equality, a real mainnet beacon, reconstruction of the
+previously shipped bad modulus, and negative cases asserting that a fabricated key
+and an unerased mission are unprovable.
+
+---
+
+## Removal of non-functional contributions (2026-08-18)
+
+Three modules were presented in the paper and README as novel contributions. None
+functioned as specified, and none was reachable from any configuration path. They
+are removed.
+
+This is a correction rather than a reduction in scope. An unreachable module that
+claims a property it does not have costs more credibility than an absent feature —
+a reviewer who checks one of these finds a claim that does not hold and reasonably
+discounts the others.
+
+| # | Module | Claim | Why it did not hold | Action |
+|---|---|---|---|---|
+| 65 | `chronos-vdf/src/blind.rs` — "Blind VDF outsourcing, Novel Contribution 1" | A client delegates `T` sequential squarings to an untrusted server | To build the blinded base the client must compute `r^(2^T) mod N` — `T` sequential squarings, exactly the work being outsourced. The blinding was cryptographically sound; the delegation goal was unmet by construction. The module's own documentation conceded this | Deleted |
+| 66 | `chronos-vdf/src/isogeny.rs` — "Post-quantum isogeny VDF, Novel Contribution 2" | Post-quantum VDF with `O(T / log T)` verification | A SHA-256 hash chain. `is_post_quantum()` returned `false`, and `verify_isogeny` re-ran the full evaluation, making verification `O(T)`. Sublinear verification is definitional for a VDF, so it was not one. It also carried the only consumer of `VdfBackend`, a config enum nothing read | Deleted |
+| 67 | `chronos-snark` — `DynarkUpdater`, "Novel Contribution 3" | `O(20,000)` incremental proof update on salt rotation | Re-proved the entire circuit; no incremental structure existed | Already removed in the prover rewrite (2026-08-18) |
+| 68 | `chronos-vdf/Cargo.toml` | — | `rand` was used only by `blind.rs` for `RandBigInt`; `thiserror` was never used in this crate at all, since error types come from `chronos_core::ChronosError` | Both dependencies dropped |
+
+### Retained, with the label corrected
+
+`posw.rs` (`PoswEngine`) is **not** deleted. It is a correct, tested SHA-256
+hash-chain Proof of Sequential Work (Cohen, EUROCRYPT 2018 — reference [13] in the
+paper), and unlike the two modules above it does exactly what it says. It is,
+however, **not on the mission path**: the agent uses the Wesolowski VDF, because a
+hash chain cannot give sublinear verification.
+
+It is retained because PoSW is a genuinely different trade-off worth keeping
+available — no trusted setup and no group of unknown order, at the cost of `O(T)`
+verification — and it is now labelled explicitly in `chronos-vdf/src/lib.rs` so it
+cannot be mistaken for part of the protocol. Honest unused code is a different
+category from misrepresented unused code.
+
+### Post-quantum VDF, restated as future work
+
+Removing the simulator does not remove the goal. The Wesolowski VDF rests on
+factoring, so a quantum adversary recovers `φ(N)` and the sequentiality guarantee
+with it.
+
+The realistic path is a **class-group VDF** rather than an isogeny walk. Groups of
+imaginary quadratic orders have unknown order by construction from a public
+discriminant, so there is no modulus whose factorisation anyone must be trusted not
+to know — which would also retire the `certN.bin` fallback and the Diogenes
+dependency in one step, rather than simulating around them.
+[`chiavdf`](https://github.com/Chia-Network/chiavdf) (Apache-2.0) is a mature
+implementation. Tracked in the README gaps table.
+
+### Not completed in this pass
+
+**Benchmarks remain unmeasured.** `cargo run -p chronos-bench --release` could not
+be executed: the shell in this environment stopped accepting commands partway
+through the session. Both withdrawn tables in the README and paper §6 therefore
+still carry the "pending re-measurement" note, and the underlying causes are fixed
+(`is_prime` is now deterministic Miller-Rabin; the circuit no longer contains
+filler). The benchmark binary itself was rewritten against the current APIs and
+compiles, but its output has not been observed.

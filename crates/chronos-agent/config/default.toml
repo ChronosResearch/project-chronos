@@ -1,29 +1,50 @@
 # Default configuration for the CHRONOS agent.
-# All values may be overridden via config.toml or CHRONOS__ env vars.
+#
+# Mission parameters — T, budgets, mission ID — are deliberately NOT here. They
+# live in mission_public.json, produced by chronos-provision, because they are the
+# values the erasure proof's commitments were computed under. Duplicating them in
+# a local file the agent can edit would let the two disagree.
+#
+# Override any value with config.toml or a CHRONOS__ environment variable, e.g.
+#   CHRONOS__SERVER__API_ADDR=127.0.0.1:9000
 
-[mission]
-t_seconds    = 3600
-t_vdf_steps  = 1_000_000
-mission_id   = "chronos-mission-default"
+[paths]
+# Published artifact from: chronos-provision --out-dir .
+mission_public = "mission_public.json"
+ct_sk          = "ct_sk.bin"
+salt           = "salt.bin"
+cert_n         = "certN.bin"
+# Groth16 proving key. Generated on first run, then reused. Persisting it is what
+# lets a third party verify a proof: a fresh setup per mission would change the
+# verifying key every time.
+proving_key    = "erasure_pk.bin"
 
-[crypto]
-rsa_bits     = 2048
-cert_n_path  = "certN.bin"
-ct_sk_path   = "ct_sk.bin"
+[auth]
+# Every request must carry an HMAC-SHA256 over (method, path, nonce, body digest)
+# under this key. Disabling this is refused unless api_addr is loopback.
+#
+# Generate with: head -c 32 /dev/urandom > operator.key && chmod 600 operator.key
+enabled  = true
+key_path = "operator.key"
 
 [network]
-drand_url           = "https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/latest"
-drand_timeout_secs  = 10
+drand_url          = "https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/latest"
+drand_timeout_secs = 10
+# The sealing key is derived from (y, salt), so the salt must be the one the
+# provisioner sealed under. Fetching a *live* beacon only works if provisioning
+# used that same beacon, via `chronos-provision --salt-hex`. Left false so the
+# default configuration is one that actually opens the ciphertext.
+fetch_live_beacon  = false
 
 [server]
 api_addr     = "127.0.0.1:8080"
 metrics_addr = "127.0.0.1:9090"
 
 [tls]
-enabled          = false
-# ca_cert_path   = "ca.pem"
+# Validated at startup but not yet enforced by the axum acceptor: requests are
+# plain HTTP. Request authentication (above) closes the "no credential" hole, but
+# not transport confidentiality. Tracked in README gaps.
+enabled = false
+# ca_cert_path    = "ca.pem"
 # agent_cert_path = "agent.pem"
 # agent_key_path  = "agent.key"
-
-# VDF backend: "wesolowski" (classical) or "isogeny" (post-quantum simulation)
-vdf_backend = "wesolowski"

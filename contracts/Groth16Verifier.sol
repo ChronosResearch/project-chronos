@@ -9,25 +9,40 @@ pragma solidity ^0.8.20;
 ///
 /// @dev WHAT AN ACCEPTED PROOF DOES AND DOES NOT MEAN
 ///
-///      Accepted means: someone knew a witness satisfying the erasure circuit
+///      Accepted means: the prover knew a witness satisfying the erasure circuit
 ///      for the supplied public inputs, under this contract's verifying key.
-///      Concretely, that all 32 bytes of a key buffer held the declared wipe
-///      pattern, and that the prover's VDF output byte matched the claimed one.
+///      Concretely, all of the following at once:
 ///
-///      It does NOT mean the agent was contained. Three specific gaps:
+///        - it knew the VDF output committed to by `yCommit`;
+///        - it derived K_enc from that exact output and the beacon salt;
+///        - it knew the ciphertext committed to by `ctCommit`, and that ciphertext
+///          authenticates and decrypts under K_enc;
+///        - the decrypted plaintext equals the key committed to by `skCommit`,
+///          which the provisioner fixed before the mission started;
+///        - the containment monitor terminated in the erased state with every
+///          capability but erasure-attestation revoked and both budgets at zero.
 ///
-///      1. The CHRONOS Groth16 trusted setup is currently single-party — one
-///         machine XOR-folds three local RNGs, so whoever ran setup holds the
-///         trapdoor and can forge proofs that verify here perfectly. Until a
-///         real Powers-of-Tau ceremony replaces it, on-chain acceptance is
-///         conditional on trusting the setup operator.
-///      2. The circuit binds a *prover-supplied* buffer. It proves a buffer was
-///         zeroized, not that the live key was.
-///      3. Ciphertext decryption is not encoded in-circuit, so the wiped buffer
-///         is not tied to the time-locked ciphertext.
+///      Chained together, that says the agent genuinely held the time-locked key
+///      and obtained it the only way the protocol permits — by completing the VDF.
 ///
-///      This contract makes attestation publicly auditable. It does not upgrade
-///      the underlying cryptographic claim.
+///      It does NOT mean no copy of the key survives. Two gaps remain:
+///
+///      1. The trusted setup is currently SINGLE-PARTY. Whoever ran it holds the
+///         trapdoor and can forge proofs that verify here perfectly. Until a real
+///         BGM17 / Powers-of-Tau ceremony with independent participants replaces
+///         it, on-chain acceptance is conditional on trusting the setup operator.
+///         This is the load-bearing caveat; do not describe verification here as
+///         trust-free.
+///      2. A SNARK constrains values, not memory locations, so the prover supplies
+///         the post-wipe buffer. The circuit cannot prove the agent retained no
+///         copy elsewhere in its address space. That residual assumption is
+///         exactly `F_OS` — mlock, no swap, no core dumps, volatile triple-pass
+///         wipe — and nothing more.
+///
+///      What this contract adds unconditionally: immutability, public timestamps,
+///      replay resistance per mission, and an audit trail nobody can revise after
+///      the fact. It removes the need to trust the operator's *claim*; it does not
+///      remove the need to trust the *ceremony*.
 library Pairing {
     /// @dev BN254 base field modulus.
     uint256 internal constant FIELD_MODULUS =
@@ -152,10 +167,24 @@ contract Groth16Verifier {
     uint256 public constant SCALAR_FIELD =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
-    /// @dev The erasure circuit exposes exactly two public inputs, in this
-    ///      order: y[0] then WIPE_PATTERN. Changing the circuit's public input
-    ///      layout requires redeploying with a new key.
-    uint256 public constant PUBLIC_INPUT_COUNT = 2;
+    /// @dev The erasure circuit exposes exactly five public inputs, in this order:
+    ///
+    ///        0. yCommit           — Poseidon commitment to the VDF output
+    ///        1. ctCommit          — commitment to the time-locked ciphertext
+    ///        2. skCommit          — commitment to the plaintext secret key
+    ///        3. missionCommit     — commitment to the mission identifier
+    ///        4. containmentCommit — commitment to the containment summary
+    ///
+    ///      Each is a full-width BN254 scalar. An earlier revision exposed two
+    ///      *single-byte* values here, so the on-chain verifier's entire binding
+    ///      to the VDF was eight bits wide and forgeable by brute force over 256
+    ///      candidates.
+    ///
+    ///      This must equal `chronos_snark::circuit::PUBLIC_INPUT_COUNT`, which
+    ///      `solidity.rs`'s `test_public_input_count_tracks_the_circuit` pins.
+    ///      Changing the circuit's public input layout requires redeploying with a
+    ///      new key.
+    uint256 public constant PUBLIC_INPUT_COUNT = 5;
 
     Pairing.G1Point internal alpha;
     Pairing.G2Point internal beta;
@@ -191,7 +220,8 @@ contract Groth16Verifier {
     /// @param proofA  Proof element A, as [x, y].
     /// @param proofB  Proof element B, as [[x.c1, x.c0], [y.c1, y.c0]].
     /// @param proofC  Proof element C, as [x, y].
-    /// @param input   Public inputs: [y[0], wipePattern].
+    /// @param input   Public inputs, in ABI order: [yCommit, ctCommit, skCommit,
+    ///                missionCommit, containmentCommit].
     /// @return True iff the pairing check succeeds.
     function verifyProof(
         uint256[2] calldata proofA,

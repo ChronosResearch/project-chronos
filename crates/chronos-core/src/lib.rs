@@ -1,3 +1,6 @@
+/// Axiomatic Containment Monitor: containment expressed as order-theoretic
+/// invariants over a lattice-valued state, verified exhaustively at startup.
+pub mod containment;
 pub mod error;
 pub mod fhe;
 pub mod memory;
@@ -6,6 +9,10 @@ pub mod mpc;
 pub mod redacted;
 pub mod wipe;
 
+pub use containment::{
+    AxiomReport, Capabilities, ContainmentLedger, ContainmentState, Decision, DenyReason, Event,
+    Phase,
+};
 pub use error::{ChronosError, ChronosResult};
 
 use num_bigint::BigUint;

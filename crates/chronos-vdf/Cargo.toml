@@ -5,9 +5,15 @@ edition = "2021"
 
 [dependencies]
 chronos-core = { path = "../chronos-core" }
-tokio        = { workspace = true }
-sha2         = { workspace = true }
-num-bigint   = { workspace = true }
-num-traits   = { workspace = true }
-thiserror    = { workspace = true }
-rand         = { workspace = true }
+
+# `wesolowski`: modular arithmetic and the Fiat-Shamir challenge hash.
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+sha2       = { workspace = true }
+
+# `posw`: async checkpoint writer and the spawn_blocking hasher.
+tokio = { workspace = true }
+
+# `rand` and `thiserror` were dropped with `blind.rs` and `isogeny.rs`. `rand`
+# supplied `RandBigInt` for blinding-factor generation; error types come from
+# `chronos_core::ChronosError`, so `thiserror` was never used here at all.
