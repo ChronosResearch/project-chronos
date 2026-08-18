@@ -1,3 +1,4 @@
+##Working on it
 # CHRONOS — Prototype
 
 Cryptographic dead man's switch for AI agents using FHE, Verifiable Delay Functions, and SNARK-based erasure proofs.
