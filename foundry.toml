@@ -1,0 +1,24 @@
+# Foundry configuration for the CHRONOS on-chain verifier.
+#
+# The contracts are self-contained: `ChronosRegistry.sol` imports
+# `Groth16Verifier.sol` from the same directory and nothing else. There are no
+# external dependencies, so `libs` is empty and no remappings are needed.
+
+[profile.default]
+src = "contracts"
+out = "out"
+libs = []
+
+# Pinned for reproducibility. Both contracts declare `pragma solidity ^0.8.20`;
+# an unpinned solc would silently drift as new patch releases appear, which is
+# the sort of thing that makes a verifier work on one machine and not another.
+solc_version = "0.8.24"
+
+# The verifier is called on-chain, so calldata and execution cost matter more
+# than deploy size. 200 runs is the usual balance.
+optimizer = true
+optimizer_runs = 200
+
+# Treat warnings as signal. The pairing library uses inline assembly for the
+# precompile staticcalls, which is deliberate and annotated.
+deny_warnings = false

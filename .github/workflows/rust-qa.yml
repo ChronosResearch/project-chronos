@@ -35,6 +35,32 @@ jobs:
       - name: Standard Cargo paths must be committable
         run: ./scripts/check_gitignore.sh
 
+  contracts:
+    name: "📜 Contracts (forge build)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      # Record the toolchain version so a build that passes here can be
+      # reproduced locally. solc itself is pinned in foundry.toml.
+      - name: Toolchain version
+        run: forge --version
+
+      # The Solidity in contracts/ merged in #58 without ever being compiled by
+      # CI. A verifier that does not build is not a verifier, and the failure was
+      # silent: nothing else in this pipeline reads .sol files.
+      #
+      # --sizes also reports deployed bytecode size and fails past the EIP-170
+      # limit of 24,576 bytes, which matters because Groth16Verifier is called on
+      # every attestation.
+      - name: Build contracts
+        run: forge build --sizes
+
   build:
     name: "🔨 Build (debug)"
     runs-on: ubuntu-latest
@@ -229,7 +255,7 @@ jobs:
 
   ci-gate:
     name: "🚦 All required checks passed"
-    needs: [build, test, release-build, repo-hygiene]
+    needs: [build, test, release-build, repo-hygiene, contracts]
     runs-on: ubuntu-latest
     if: always()
     steps:
