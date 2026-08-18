@@ -39,7 +39,11 @@ jobs:
   build:
     name: "🔨 Build (debug)"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A cold build of the TFHE and arkworks trees on a 2-core runner is slow, and
+    # dependencies are now compiled at opt-level 3 even in debug (see
+    # `[profile.dev.package."*"]` in Cargo.toml), which trades build time for a
+    # test suite that terminates. 45 minutes is headroom, not an expectation.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -52,11 +56,6 @@ jobs:
             target
           key: ${{ env.CACHE_VERSION }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ env.CACHE_VERSION }}-cargo-
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev
 
       - name: cargo build (debug, all targets)
         run: cargo build --workspace --all-targets
@@ -89,11 +88,6 @@ jobs:
             target
           key: ${{ env.CACHE_VERSION }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ env.CACHE_VERSION }}-cargo-
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev
 
       # `--all-targets` excludes doctests, so they are run separately below.
       # Without the second invocation the doc examples in chronos-core and
@@ -130,11 +124,6 @@ jobs:
             target
           key: ${{ env.CACHE_VERSION }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ env.CACHE_VERSION }}-cargo-
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev
 
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@cargo-tarpaulin
@@ -173,10 +162,14 @@ jobs:
           key: ${{ env.CACHE_VERSION }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ env.CACHE_VERSION }}-cargo-musl-
 
-      - name: Install system deps
+      # Only the musl build needs anything from apt. `gcc`, `g++` and `cmake`
+      # already ship with the ubuntu-latest image, and `libgmp-dev` was never
+      # needed at all — `gmp-mpfr-sys` is commented out in Cargo.toml and
+      # chronos-vdf uses the pure-Rust num-bigint backend.
+      - name: Install musl toolchain
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev musl-tools
+          sudo apt-get install -y --no-install-recommends musl-tools
 
       - name: Add musl target
         run: rustup target add x86_64-unknown-linux-musl
@@ -210,11 +203,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev
-
       - name: cargo clippy (warnings as annotations)
         run: cargo clippy --workspace --all-targets 2>&1 || true
 
@@ -242,11 +230,6 @@ jobs:
     continue-on-error: true          # ← FAILSAFE: missing docs annotate, don't block
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y gcc g++ cmake libgmp-dev
 
       - name: cargo doc
         run: cargo doc --no-deps --workspace 2>&1 || true
