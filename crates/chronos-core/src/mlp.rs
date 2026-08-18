@@ -186,7 +186,27 @@ mod tests {
         }
     }
 
+    // ── A note on `cfg_attr(miri, ignore)` below ──────────────────────────────
+    //
+    // Every test that calls `generate_keys` is skipped under Miri. The `x86_64`
+    // tfhe feature supplies an RDSEED-backed seeder, and Miri is an interpreter
+    // that does not emulate the `rdseed` instruction, so seeder construction
+    // panics with "Unable to instantiate a seeder" before any test logic runs.
+    //
+    // Adding `seeder_unix` as a fallback would trade one interpreter limitation
+    // for another, and it would not make these tests meaningful under Miri
+    // regardless: Miri cannot model the SIMD paths TFHE relies on, and
+    // interpreting a bootstrap would take impractically long.
+    //
+    // Miri is here to check the `unsafe` code — `LockedBytes`' mlock/munlock and
+    // `secure_wipe`'s volatile triple-pass write. Those still run. Nothing in
+    // this module contains `unsafe`.
+    //
+    // These tests are NOT ignored under `cargo test`, which is what actually
+    // validates the FHE path.
+
     #[test]
+    #[cfg_attr(miri, ignore = "tfhe seeder needs rdseed, which Miri cannot emulate")]
     fn test_two_layer_mlp_matches_plaintext_reference() {
         let config = ConfigBuilder::default().build();
         let (client_key, server_key) = generate_keys(config);
@@ -214,6 +234,7 @@ mod tests {
     /// ReLU must actually clip, not pass through. If `relu` ever degrades to
     /// identity this fails.
     #[test]
+    #[cfg_attr(miri, ignore = "tfhe seeder needs rdseed, which Miri cannot emulate")]
     fn test_relu_clips_negative() {
         let config = ConfigBuilder::default().build();
         let (client_key, server_key) = generate_keys(config);
@@ -231,6 +252,7 @@ mod tests {
     /// A hidden unit whose pre-activation is negative must contribute zero —
     /// this is the case that distinguishes a real ReLU from a no-op.
     #[test]
+    #[cfg_attr(miri, ignore = "tfhe seeder needs rdseed, which Miri cannot emulate")]
     fn test_negative_preactivation_contributes_zero() {
         let config = ConfigBuilder::default().build();
         let (client_key, server_key) = generate_keys(config);
@@ -256,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "tfhe seeder needs rdseed, which Miri cannot emulate")]
     fn test_rejects_length_mismatch() {
         let config = ConfigBuilder::default().build();
         let (client_key, server_key) = generate_keys(config);

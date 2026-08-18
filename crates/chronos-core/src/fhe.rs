@@ -187,7 +187,13 @@ mod tests {
 
     /// Full round trip through the wire format: encrypt, serialize, evaluate,
     /// deserialize, decrypt, compare against a plaintext reference.
+    ///
+    /// Skipped under Miri: the `x86_64` tfhe feature's seeder needs the `rdseed`
+    /// instruction, which Miri does not emulate, so `generate_keys` panics before
+    /// the test body runs. See the note in `mlp.rs`. Runs normally under
+    /// `cargo test`.
     #[test]
+    #[cfg_attr(miri, ignore = "tfhe seeder needs rdseed, which Miri cannot emulate")]
     fn test_evaluate_ciphertext_round_trip() {
         let engine = FheEngine::new();
         engine
