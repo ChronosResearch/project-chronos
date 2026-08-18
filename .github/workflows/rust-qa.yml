@@ -213,7 +213,14 @@ jobs:
           rustup toolchain install nightly
           rustup +nightly component add miri rust-src
 
+      # Miri sandboxes filesystem access by default, so `MpcCertificate::load`
+      # aborts on `std::fs::read` with "unsupported operation: `open` not
+      # available when isolation is enabled" — not a memory-safety finding.
+      # Disabling isolation lets Miri reach the code worth checking here: the
+      # `unsafe` blocks in LockedBytes (mlock) and secure_wipe.
       - name: Run Miri on chronos-core
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
         run: cargo +nightly miri test --package chronos-core
 
   # ════════════════════════════════════════════════════════════════════════════
