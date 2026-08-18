@@ -25,6 +25,7 @@ jobs:
   repo-hygiene:
     name: "🧹 Repo hygiene"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +39,7 @@ jobs:
   build:
     name: "🔨 Build (debug)"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +65,18 @@ jobs:
     name: "✅ Tests"
     runs-on: ubuntu-latest
     needs: [build]
+    # A hang must cost 45 minutes, not 6 hours. Run #60 was cancelled at the
+    # 6-hour GitHub ceiling with no result, which is the worst possible outcome:
+    # maximum runner cost, zero information.
+    #
+    # Sizing: with dependencies optimised (see `[profile.dev.package."*"]` in
+    # Cargo.toml) chronos-core completes in ~200s on a 12-thread machine, of which
+    # the four TFHE key-generating tests are ~190s. GitHub runners have 2-4 cores,
+    # so budget 3-4x, and the full workspace adds the Groth16 suites on top. 45
+    # minutes therefore means "something is wrong", not "this is slow" — but it is
+    # deliberately not tighter, because a false timeout on a legitimately slow FHE
+    # test is indistinguishable from a real failure in the gate.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -81,14 +95,57 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y gcc g++ cmake libgmp-dev
 
+      # `--all-targets` excludes doctests, so they are run separately below.
+      # Without the second invocation the doc examples in chronos-core and
+      # chronos-agent are compiled by `cargo doc` but never executed.
       - name: cargo test workspace
         run: cargo test --workspace --all-targets
+
+      - name: cargo test doctests
+        run: cargo test --workspace --doc
+
+  # Coverage is deliberately a separate, non-blocking job.
+  #
+  # It previously ran inside `test`, after the suite, which meant the hard gate
+  # executed the whole workspace twice — once normally and once under llvm-cov
+  # instrumentation. That doubled the exposure to any slow test and made a
+  # coverage-tool failure indistinguishable from a real test failure in the gate.
+  coverage:
+    name: "📊 Coverage (report only)"
+    runs-on: ubuntu-latest
+    needs: [build]
+    continue-on-error: true
+    # Instrumented runs are slower than plain ones, and this job cannot block a
+    # merge, so it gets the most headroom of any job here.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Rust toolchain + registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ env.CACHE_VERSION }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-cargo-
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc g++ cmake libgmp-dev
 
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@cargo-tarpaulin
 
+      # `--timeout` is tarpaulin's PER-TEST limit, not a total. The slowest test
+      # (`fhe::tests::test_evaluate_ciphertext_round_trip`) measures ~190s on a
+      # 12-thread machine, so on a 2-core runner under llvm-cov instrumentation
+      # 900s is the right order. The previous value of 120s was below the measured
+      # runtime and would abort a passing test, reporting it as a failure.
       - name: Coverage report
-        run: cargo tarpaulin --engine llvm --workspace --timeout 120 --out xml
+        run: cargo tarpaulin --engine llvm --workspace --timeout 900 --out xml
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -100,6 +157,9 @@ jobs:
     name: "📦 Release Build + Size Check"
     runs-on: ubuntu-latest
     needs: [build]
+    # LTO with codegen-units=1 over the arkworks and TFHE trees is genuinely slow,
+    # so this gets more headroom than the other jobs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -205,6 +265,10 @@ jobs:
     name: "🧪 Miri (memory safety)"
     runs-on: ubuntu-latest
     continue-on-error: true          # ← FAILSAFE: Miri is informational
+    # Miri interprets rather than executes, so it is orders of magnitude slower.
+    # The FHE and MLP tests are unreachable under it in any sane time and are
+    # skipped in chronos-core; this bound catches anything else that creeps in.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

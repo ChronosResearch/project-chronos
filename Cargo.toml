@@ -100,3 +100,30 @@ panic         = "abort"
 [profile.dev]
 opt-level = 0
 debug     = true
+
+# Dependencies are compiled with full optimisation even in debug and test builds.
+#
+# This is not a tuning preference; without it the test suite does not terminate in
+# usable time. TFHE-rs performs millions of polynomial FFT operations per key
+# generation, and at `opt-level = 0` that is 50-100x slower than optimised. The
+# observable effect was `fhe::tests::test_evaluate_ciphertext_round_trip` and the
+# three `mlp::` tests running for hours, which drove CI run #60 into GitHub's
+# 6-hour job ceiling and left #61 hanging in the same place.
+#
+# `"*"` matches dependencies only, never workspace members, so CHRONOS's own code
+# still compiles unoptimised with full debug info and fast incremental rebuilds.
+# `[profile.test]` inherits from `[profile.dev]`, so this covers `cargo test` too.
+#
+# `debug = false` on dependencies is a large additional win: debug info for the
+# arkworks and TFHE trees is most of the link time and none of it is useful when
+# debugging CHRONOS.
+[profile.dev.package."*"]
+opt-level = 3
+debug     = false
+
+# Coverage instrumentation compounds with the above: tarpaulin re-runs the whole
+# suite under llvm-cov, so an unoptimised dependency tree costs the slow path
+# twice. Keep this profile aligned with `dev`.
+[profile.test.package."*"]
+opt-level = 3
+debug     = false
