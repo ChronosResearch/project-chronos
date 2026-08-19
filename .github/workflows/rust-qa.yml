@@ -98,57 +98,36 @@ jobs:
       - name: cargo test doctests
         run: cargo test --workspace --doc
 
-  # Coverage is deliberately a separate, non-blocking job.
+  # ── Coverage was removed ────────────────────────────────────────────────────
   #
-  # It previously ran inside `test`, after the suite, which meant the hard gate
-  # executed the whole workspace twice — once normally and once under llvm-cov
-  # instrumentation. That doubled the exposure to any slow test and made a
-  # coverage-tool failure indistinguishable from a real test failure in the gate.
-  coverage:
-    name: "📊 Coverage (report only)"
-    runs-on: ubuntu-latest
-    needs: [build]
-    continue-on-error: true
-    # Instrumented runs are slower than plain ones, and this job cannot block a
-    # merge, so it gets the most headroom of any job here.
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
+  # `cargo tarpaulin` re-ran the entire workspace under llvm-cov instrumentation,
+  # so it duplicated the `test` job at higher cost. It exceeded its 60-minute
+  # timeout on every run, was `continue-on-error` and therefore never gated
+  # anything, and the resulting percentage was not used to make any decision.
+  #
+  # A coverage number is worth having when it changes behaviour — a threshold that
+  # blocks a merge, or a report someone reads. Neither applied here, so it was
+  # pure runner cost. Reinstate it scoped to `chronos-core` and `chronos-snark`
+  # with the FHE tests excluded if it becomes useful.
 
-      - name: Cache Rust toolchain + registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ env.CACHE_VERSION }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ env.CACHE_VERSION }}-cargo-
-
-      - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@cargo-tarpaulin
-
-      # `--timeout` is tarpaulin's PER-TEST limit, not a total. The slowest test
-      # (`fhe::tests::test_evaluate_ciphertext_round_trip`) measures ~190s on a
-      # 12-thread machine, so on a 2-core runner under llvm-cov instrumentation
-      # 900s is the right order. The previous value of 120s was below the measured
-      # runtime and would abort a passing test, reporting it as a failure.
-      - name: Coverage report
-        run: cargo tarpaulin --engine llvm --workspace --timeout 900 --out xml
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
+  # ── Static musl binary ──────────────────────────────────────────────────────
+  #
+  # Runs on pushes to main, not on pull requests, and is NOT a required check.
+  #
+  # This is a packaging concern rather than a correctness one: a compilation error
+  # would already have been caught by the debug build, and nothing about the
+  # protocol depends on the binary being statically linked. Blocking PRs on it
+  # meant a 60-minute LTO build sat on the critical path of every review.
+  #
+  # `lto = true` with `codegen-units = 1` across the TFHE and arkworks trees is
+  # slow on a 2-core runner. The 1m 50s observed on earlier runs was a warm cache,
+  # not a cold build, which is why the timeout looked generous and was not.
   release-build:
     name: "📦 Release Build + Size Check"
     runs-on: ubuntu-latest
     needs: [build]
-    # LTO with codegen-units=1 over the arkworks and TFHE trees is genuinely slow,
-    # so this gets more headroom than the other jobs.
-    timeout-minutes: 60
+    if: github.event_name == 'push'
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -274,20 +253,24 @@ jobs:
   # FINAL GATE — only depends on the HARD gates
   # ════════════════════════════════════════════════════════════════════════════
 
+  # Three required checks: the tree is committable, it compiles, and the tests
+  # pass. `release-build` is deliberately absent — it is skipped on pull requests,
+  # and a skipped job reports neither success nor failure, so requiring it here
+  # would fail every PR.
   ci-gate:
     name: "🚦 All required checks passed"
-    needs: [build, test, release-build, repo-hygiene]
+    needs: [repo-hygiene, build, test]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check hard gate results
         run: |
+          echo "repo-hygiene: ${{ needs.repo-hygiene.result }}"
           echo "build:        ${{ needs.build.result }}"
           echo "test:         ${{ needs.test.result }}"
-          echo "release-build: ${{ needs.release-build.result }}"
-          if [ "${{ needs.build.result }}" != "success" ] || \
-             [ "${{ needs.test.result }}" != "success" ] || \
-             [ "${{ needs.release-build.result }}" != "success" ]; then
+          if [ "${{ needs.repo-hygiene.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ]; then
             echo "❌ One or more required checks failed"
             exit 1
           fi
