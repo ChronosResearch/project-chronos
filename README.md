@@ -1,4 +1,4 @@
-# CHRONOS Prototype
+# CHRONOS
 
 **A cryptographic dead man's switch for AI agents.** An agent's key is released only by sequential work, its behaviour is bounded by a machine-checked capability monitor, and both its key destruction and its conduct are attested in a single 128-byte proof anyone can verify. No trusted hardware.
 
@@ -98,17 +98,44 @@ The residual assumption is therefore exactly this, and nothing beyond it:
 
 ## Quick start
 
+The fastest way to see the whole protocol is the demo script. It provisions a
+mission, runs the agent through to erasure, fetches the attestation, verifies it,
+and then verifies that a **tampered** proof is rejected.
+
+```bash
+./scripts/demo.sh                    # Linux / macOS
+powershell -File scripts\demo.ps1    # Windows
+```
+
+First run builds in release mode, which takes 15–25 minutes because of LTO over
+the TFHE and arkworks trees. After that the demo itself takes about 30 seconds.
+
+### Running it by hand
+
 ```bash
 # 1. Provision a mission (the ground-control role)
+mkdir -p mission/config
 cargo run -p chronos-provision --release -- \
-    --mission-id demo-001 --t-vdf-steps 100000 --out-dir ./mission
+    --mission-id demo-001 --t-vdf-steps 2000000 --out-dir ./mission
 
-# 2. Operator key for request authentication
+# 2. The agent reads config/default.toml relative to its working directory,
+#    and that source is REQUIRED, so it has to exist where the agent runs.
+cp crates/chronos-agent/config/default.toml mission/config/default.toml
+
+# 3. Operator key for request authentication
 head -c 32 /dev/urandom > mission/operator.key && chmod 600 mission/operator.key
 
-# 3. Run the agent
-cd mission && cargo run -p chronos-agent --release
+# 4. Run the agent from the mission directory
+cd mission && ../target/release/chronos-agent
 ```
+
+Step 2 is easy to miss. Without it the agent exits immediately with a
+configuration error, because `config/default.toml` is resolved against the
+process working directory rather than the crate root. Any value can be overridden
+with a `CHRONOS__`-prefixed environment variable, for example
+`CHRONOS__SERVER__API_ADDR=127.0.0.1:9000`, but the file itself must be present.
+
+### Files the provisioner writes
 
 | File | Contents | Distribute to |
 |---|---|---|
@@ -117,7 +144,8 @@ cd mission && cargo run -p chronos-agent --release
 | `salt.bin` | beacon salt | agent only |
 | `certN.bin` | modulus `N` | public |
 
-`sk` is never written to disk. The provisioner wipes it and destroys `phi(N)` before exiting.
+`sk` is never written to disk. The provisioner wipes it and destroys `phi(N)`
+before exiting.
 
 ## Architecture
 

@@ -207,3 +207,10 @@ test-results.txt
 erasure_pk.bin
 identity_pk.bin
 operator.key
+
+# ── Paper source, kept local ──────────────────────────────────────────────────
+# The LaTeX source and its build output stay on disk and out of the repository.
+# Remove this entry if the paper should be versioned alongside the artifact —
+# `*.aux`, `*.log`, `*.out`, `*.toc` and `*.pdf` are already ignored above, so
+# only the `.tex` would need tracking.
+/paper/
