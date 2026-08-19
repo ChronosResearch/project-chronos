@@ -1,108 +1,302 @@
-# CHRONOS — Prototype
+# CHRONOS
 
-Cryptographic dead man's switch for AI agents: fully homomorphic inference, a verifiable delay function that gates key release, a SNARK that attests erasure, and a machine-checked containment monitor. No trusted hardware.
+**A cryptographic dead man's switch for AI agents.** An agent's key is released only by sequential work, its behaviour is bounded by a machine-checked capability monitor, and both its key destruction and its conduct are attested in a single 128-byte proof anyone can verify. No trusted hardware.
 
-**Paper:** [CHRONOS: Ephemeral AI Agents via FHE Time-Locked Secrets](https://zenodo.org/records/21534311) (preprint)
+**Paper:** [CHRONOS v4: Compositional Architecture for Ephemeral FHE Agents with Proof-Carrying Containment](https://zenodo.org/records/21534311)
 
-> **The paper is currently behind the code.** Sections 3.3, 3.4, 5 and 6 of the v3
-> preprint describe a design that this repository has since been shown to
-> implement incorrectly, and which has been replaced. Where the two disagree,
-> **this repository is authoritative**. The specific divergences are listed under
-> [Paper divergences](#paper-divergences).
+**Language:** Rust · **Curve:** BN254 (Groth16) / BLS12-381 (drand) · **License:** AGPL-3.0
 
-## What this is
+---
 
-An agent's secret key is sealed under a key derived from a VDF output, so it cannot be recovered without performing `T` sequential squarings. The agent performs that work, opens the key, serves inference under an explicit capability budget, then destroys the key and produces a Groth16 proof about what it did. Identity is bound to the same VDF output and signed under ML-DSA.
+## Contents
 
-The proof is the interesting part, so it is worth stating precisely what it establishes.
+- [The idea](#the-idea) · [Protocol](#protocol) · [Three roles](#three-roles)
+- [What the proof establishes](#what-the-proof-establishes) · [What it does not](#what-it-does-not-establish)
+- [Quick start](#quick-start) · [Architecture](#architecture) · [API](#api)
+- [Status](#status) · [Benchmarks](#benchmarks) · [Calibrating-T](#calibrating-t) · [Gaps](#gaps)
 
-## What the erasure proof proves
+---
 
-Given five public commitments — four fixed by the provisioner *before* the mission starts — an accepted proof establishes that the prover simultaneously knew a witness for all of:
+## The idea
 
-1. the VDF output committed to by `y_commit`;
-2. `K_enc` derived from that exact output and the beacon salt, via the in-circuit KDF;
-3. the ciphertext committed to by `ct_commit`;
-4. that this ciphertext **authenticates and decrypts** under `K_enc`;
-5. that the resulting plaintext equals the key committed to by `sk_commit`;
-6. the mission identifier behind `mission_commit`;
-7. that the containment monitor terminated **erased, fully revoked, both budgets at zero**.
+Give an agent a key and a deadline, and nobody outside the operator can verify what it did or that it stopped. The operator simply says so.
 
-Chained together, 1–5 say the agent genuinely held the time-locked key and obtained it the only way the protocol allows. An agent that never ran the VDF cannot produce this witness; nor can one that fabricated a key, because `sk_commit` is not the agent's to choose.
+CHRONOS makes that claim checkable. A secret key is sealed under a key derived from a verifiable delay function, so it cannot be opened without performing `T` sequential squarings — no amount of parallel hardware shortens the wait. The agent does that work, opens the key, serves homomorphic inference under an explicit capability budget, destroys the key, and emits a Groth16 proof establishing both that it held the genuine time-locked key and that its containment monitor terminated in a fully-revoked state.
 
-### What it does not prove
+The proof is the contribution. Everything else is machinery in service of it.
 
-**No circuit can prove that memory was freed.** A SNARK constrains values, not locations. The prover supplies the post-wipe buffer, so it could present an all-`0xFF` buffer while retaining a copy of the key elsewhere in its address space.
+## Protocol
 
-The residual assumption is therefore exactly `F_OS` — `mlock`, no swap, no core dumps, volatile triple-pass wipe — and nothing beyond it. That is a real limitation, and it is smaller than it was: an earlier revision of this circuit checked `[0xFF; 32] == 0xFF` and nothing else, so a prover who had never seen the key, the ciphertext, or the VDF could produce a passing proof.
+```
+  PROVISIONER                      AGENT                        VERIFIER
+  (ground control)                                              (anyone)
+  ────────────────                 ─────                        ────────
 
-**The trusted setup is single-party.** Whoever runs it holds the trapdoor and can forge proofs that verify, on-chain included. Do not describe verification here as trust-free until a real BGM17 ceremony replaces it.
+  sample sk
+  y   = g^(2^T) mod N
+  K   = PoseidonKDF(y, salt)
+  ct  = ChronosAEAD_K(sk)
+  publish 4 commitments  ────────► ct_sk.bin
+  wipe sk, destroy phi(N)          mission_public.json
+                                          │
+                                          ├─ verify containment axioms A1..A5
+                                          │
+                                          ├─ y' = g^(2^T) mod N   ← T squarings
+                                          ├─ verify VDF proof     ← O(log T)
+                                          ├─ K' = PoseidonKDF(y', salt)
+                                          ├─ sk' = ChronosAEAD_open(ct)
+                                          ├─ assert H(sk') == sk_commit
+                                          │
+                                          ├─ serve /infer under admission control
+                                          │
+                                          ├─ containment ──► Erased
+                                          ├─ prove(sk still held)
+                                          └─ wipe sk ────────────► proof (128 B)
+                                                                  + 5 commitments
+                                                                        │
+                                                                        ▼
+                                                                  accept / reject
+```
+
+## Three roles
+
+The separation is load-bearing. An erasure proof is only as strong as the party that fixes its public inputs — if the agent chose the commitment to its own key, it could fabricate a key, seal it under a key of its choosing, and produce a valid proof about material that was never time-locked.
+
+| Role | Holds | Produces | Trusted for |
+|---|---|---|---|
+| **Provisioner** | `sk`, factors of `N` | `ct_sk.bin`, `mission_public.json` | choosing `sk` honestly |
+| **Agent** | sealed key, artifact | VDF output, erasure proof | nothing |
+| **Verifier** | artifact only | accept / reject | nothing |
+
+The provisioner must be a different party from the agent. Given that, it may generate `N = pq` and use `phi(N)` to build the puzzle cheaply, then destroy the factors — this is exactly Rivest–Shamir–Wagner time-lock puzzles, and it removes any need for a live multi-party ceremony. Supplying an externally generated `N` is also supported.
+
+## What the proof establishes
+
+Five public commitments, four of them fixed by the provisioner before the mission starts. An accepted proof establishes that the prover simultaneously knew a witness for **all** of:
+
+| # | Statement | Public input |
+|---|---|---|
+| 1 | the VDF output | `y_commit` |
+| 2 | `K_enc` derived from *that exact output* and the beacon salt, via the in-circuit KDF | — |
+| 3 | the time-locked ciphertext | `ct_commit` |
+| 4 | that this ciphertext **authenticates and decrypts** under `K_enc` | — |
+| 5 | that the plaintext **equals the committed key** | `sk_commit` |
+| 6 | the mission identifier | `mission_commit` |
+| 7 | that the containment monitor terminated **erased, fully revoked, budgets zero** | `containment_commit` |
+
+Chained, 1–5 say the agent genuinely held the time-locked key and obtained it the only way the protocol allows. An agent that never ran the VDF cannot derive `K_enc` and so cannot produce the witness. An agent that fabricated a key cannot match `sk_commit`, which is not its to choose. Item 7 is *proof-carrying containment*: the same record that attests destruction attests discipline.
+
+## What it does not establish
+
+**No circuit can prove that memory was freed.** A SNARK constrains values, not locations. The prover supplies the post-wipe buffer, so it could present a wiped buffer while retaining a copy of the key elsewhere in its address space.
+
+The residual assumption is therefore exactly this, and nothing beyond it:
+
+> **`F_OS`** — memory-locked pages are excluded from swap; core dumps are disabled; and a volatile triple-pass overwrite leaves no recoverable copy in the process address space.
+
+**The trusted setup is single-party.** Whoever runs it holds the trapdoor and can forge proofs that verify, on-chain included. The setup transcript is hash-chained, tamper-evident and publishable, and contributions can be collected from separate machines — but it combines *seeds*, so the party running the final step can reconstruct the trapdoor. That is not phase-2 ceremony security. Do not describe verification here as trust-free until a [BGM17](https://eprint.iacr.org/2017/1050) ceremony replaces it.
+
+## Quick start
+
+The fastest way to see the whole protocol is the demo script. It provisions a
+mission, runs the agent through to erasure, fetches the attestation, verifies it,
+and then verifies that a **tampered** proof is rejected.
+
+```bash
+./scripts/demo.sh                    # Linux / macOS
+powershell -File scripts\demo.ps1    # Windows
+```
+
+First run builds in release mode, which takes 15–25 minutes because of LTO over
+the TFHE and arkworks trees. After that the demo itself takes about 30 seconds.
+
+### Running it by hand
+
+```bash
+# 1. Provision a mission (the ground-control role)
+mkdir -p mission/config
+cargo run -p chronos-provision --release -- \
+    --mission-id demo-001 --t-vdf-steps 2000000 --out-dir ./mission
+
+# 2. The agent reads config/default.toml relative to its working directory,
+#    and that source is REQUIRED, so it has to exist where the agent runs.
+cp crates/chronos-agent/config/default.toml mission/config/default.toml
+
+# 3. Operator key for request authentication
+head -c 32 /dev/urandom > mission/operator.key && chmod 600 mission/operator.key
+
+# 4. Run the agent from the mission directory
+cd mission && ../target/release/chronos-agent
+```
+
+Step 2 is easy to miss. Without it the agent exits immediately with a
+configuration error, because `config/default.toml` is resolved against the
+process working directory rather than the crate root. Any value can be overridden
+with a `CHRONOS__`-prefixed environment variable, for example
+`CHRONOS__SERVER__API_ADDR=127.0.0.1:9000`, but the file itself must be present.
+
+### Files the provisioner writes
+
+| File | Contents | Distribute to |
+|---|---|---|
+| `mission_public.json` | the four commitments | **everyone — publish it** |
+| `ct_sk.bin` | sealed key | agent only |
+| `salt.bin` | beacon salt | agent only |
+| `certN.bin` | modulus `N` | public |
+
+`sk` is never written to disk. The provisioner wipes it and destroys `phi(N)`
+before exiting.
 
 ## Architecture
 
 ```
 crates/
-├── chronos-core       # errors, mlock/wipe, FHE engine, modulus, containment monitor
-├── chronos-vdf        # Wesolowski VDF (interruptible); PoSW, off the mission path
-├── chronos-snark      # Poseidon, Chronos-AEAD, erasure + identity circuits, EVM export
-├── chronos-provision  # mission provisioning: seals the key, publishes commitments
-├── chronos-agent      # HTTP API, protocol loop, EAIP, authentication
-├── chronos-bench      # benchmark binary
-└── chronos-ffi        # reserved FFI boundary (not active)
+├── chronos-core       errors · mlock/wipe · FHE engine · modulus · containment monitor
+├── chronos-vdf        Wesolowski VDF (interruptible) · PoSW (off the mission path)
+├── chronos-snark      Poseidon · Chronos-AEAD · erasure + identity circuits · EVM export
+├── chronos-provision  mission provisioning: seals the key, publishes commitments
+├── chronos-agent      HTTP API · protocol loop · EAIP · authentication
+├── chronos-bench      benchmark binary
+└── chronos-ffi        reserved FFI boundary (not active)
+contracts/             Groth16 verifier + attestation registry (Solidity)
 ```
 
-Three roles, and they must be distinct — the proof's soundness depends on it:
+### Cryptographic choices
 
-| Role | Holds | Produces |
+| Component | Choice | Why |
 |---|---|---|
-| Provisioner (ground control) | `sk`, the modulus factors | `ct_sk.bin`, `mission_public.json` |
-| Agent | `ct_sk.bin`, the artifact | the VDF output, the erasure proof |
-| Verifier (anyone) | the artifact | accept / reject |
+| Proof system | Groth16 / BN254 | 128-byte constant-size proofs; matches EVM `alt_bn128` precompiles |
+| Hash / commitments | Poseidon-128, `t=3`, `alpha=5`, 8+57 rounds | ~300 constraints per permutation vs ~25,000 for SHA-256 |
+| Key sealing | **Chronos-AEAD** (Poseidon encrypt-then-MAC) | makes in-circuit authenticated decryption ~2k constraints instead of ~60k for AES-GCM |
+| VDF | Wesolowski over RSA-2048 | single-element proof, `O(log T)` verification |
+| Beacon | drand `quicknet` (BLS12-381) | public, unpredictable salt; verified offline against a real mainnet beacon |
+| PQ identity | ML-DSA (Dilithium3, FIPS 204) | EUF-CMA under Module-LWE |
 
-## Quick start
+AES-256-GCM and HKDF-SHA256 are retained everywhere CHRONOS talks to something external. The Poseidon substitution is confined to the one relation a proof must reason about.
 
-```bash
-# 1. Provision a mission (plays the ground-control role)
-cargo run -p chronos-provision --release -- \
-    --mission-id demo-001 --t-vdf-steps 100000 --out-dir ./mission
+## API
 
-# 2. Generate an operator key for request authentication
-head -c 32 /dev/urandom > mission/operator.key && chmod 600 mission/operator.key
+All endpoints require `X-Chronos-Nonce` and `X-Chronos-Auth` — an HMAC-SHA256 over method, path, nonce and body digest under a pre-shared operator key. The agent refuses to bind a non-loopback address with authentication disabled.
 
-# 3. Run the agent
-cd mission && cargo run -p chronos-agent --release
-```
-
-The provisioner writes `mission_public.json` (publish it), `ct_sk.bin` and `salt.bin` (agent only), and `certN.bin` (public). It then wipes `sk` and destroys `φ(N)`.
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/status` | GET | phase, containment counters, ledger chain head |
+| `/mission/init` | POST | start the mission |
+| `/infer` | POST | FHE inference, gated by admission control |
+| `/verify` | POST | verify a submitted erasure proof |
+| `/identity/proof` | GET | EAIP zero-knowledge proof + ML-DSA signature |
+| `/attestation` | GET | erasure proof, public inputs, verifying key, EVM calldata |
 
 ## Status
 
+### Working
+
+| Component | Notes |
+|---|---|
+| Poseidon-128 over BN254 | native + R1CS; digests tested bit-identical |
+| Chronos-AEAD | in-circuit decryption ~2k constraints |
+| Poseidon KDF `(y, salt) -> K_enc` | encoded in-circuit |
+| Groth16 erasure proof | full key-release chain, 5 full-width public inputs |
+| EAIP identity proof | pre-image relation `Poseidon(y, mission) == R` genuinely encoded |
+| Axiomatic Containment Monitor | axioms A1–A5 verified over 1,728 abstract states at startup |
+| Proof-carrying containment | erasure proof binds the containment summary and enforces its terminal state |
+| Mission provisioning | generates `N`, seals the key, publishes commitments, destroys `phi(N)` |
+| Wesolowski VDF | interruptible, so the watchdog can actually stop it |
+| Native VDF verification | `O(log T)`, outside the SNARK — why the circuit needs no 2048-bit arithmetic |
+| drand verification | quicknet `min_sig`; verified offline against mainnet round 123 |
+| FHE key generation | `tfhe-rs` |
+| FHE inference | two-layer MLP over `FheInt64`, checked against a plaintext reference |
+| ML-DSA identity signing | Dilithium3 |
+| Key in `mlock`'d memory | triple-pass volatile wipe; no plaintext copy outside `LockedBytes` |
+| Request authentication | HMAC over method, path, nonce, body |
+| Replay protection | `O(1)` sliding-window nonce cache |
+| Persisted proving key | setup once, publish the verifying key |
+| `/attestation` with EVM calldata | — |
+| Prometheus metrics, graceful shutdown | — |
+
+### Partial or unverified
+
 | Component | State |
 |---|---|
-| Poseidon-128 over BN254 — native + R1CS, Grain-LFSR constants | Working — native and in-circuit digests tested identical |
-| Chronos-AEAD — Poseidon encrypt-then-MAC | Working — in-circuit decryption ~2k constraints |
-| Poseidon KDF `(y, salt) -> K_enc` | Working — encoded in-circuit |
-| Groth16 erasure proof (BN254) | Working — full key-release chain encoded, 5 full-width public inputs |
-| EAIP identity proof | Working — pre-image relation `Poseidon(y, mission) == R` genuinely encoded |
-| Axiomatic Containment Monitor | Working — axioms A1–A5 verified exhaustively over 1,728 abstract states at startup |
-| Proof-carrying containment | Working — the erasure proof binds the containment summary and enforces its terminal state |
-| Mission provisioning (`chronos-provision`) | Working — generates `N`, seals the key, publishes commitments, destroys `φ(N)` |
-| Wesolowski VDF (pure `num-bigint`, RSA-2048) | Working — interruptible, so the watchdog can stop it |
-| Native VDF verification, `O(log T)` | Working — checked outside the SNARK, which is why the circuit needs no 2048-bit arithmetic |
-| BLS12-381 drand verification (quicknet) | Working — verified against a real mainnet beacon offline |
-| FHE key generation (`tfhe-rs`) | Working |
-| FHE inference — two-layer MLP over `FheInt64` | Working — verified against a plaintext reference at toy scale |
-| ML-DSA (Dilithium3) PQ identity signing | Working |
-| Secret key in `mlock`'d memory, triple-pass wipe | Working — no plaintext copy outside `LockedBytes` |
-| Request authentication (HMAC over method, path, nonce, body) | Working |
-| Replay protection (O(1) nonce cache) | Working |
-| Persisted proving key | Working — setup once, publish the verifying key |
-| `/attestation` endpoint with EVM calldata | Working |
-| Prometheus metrics, graceful shutdown | Working |
-| On-chain verification | Contracts written for the 5-input ABI; **unaudited, uncompiled, not in CI** |
-| Groth16 trusted setup | **Single-party.** Auditable hash-chained transcript, but not ceremony security |
-| `F_OS` (no swap, no core dumps, no residual copies) | **Axiomatized**, not reduced to hardware attestation |
-| mTLS client certificates | Config validated, **not enforced** by the axum acceptor |
+| On-chain verification | contracts match the 5-input ABI (pinned by a test) but are **uncompiled, unaudited, undeployed** |
+| Groth16 trusted setup | **single-party** — auditable transcript, not ceremony security |
+| `F_OS` | **axiomatized**, not reduced to hardware attestation |
+| mTLS client certificates | config validated, **not enforced** by the axum acceptor |
+| FHE inference scale | toy only — two inputs, two hidden units |
+
+## Benchmarks
+
+```bash
+cargo run -p chronos-bench --release
+```
+
+Measured on the development machine: Windows x86-64, release build, pure-Rust `num-bigint` (no GMP). Re-measure on your target — [`T` calibration](#calibrating-t) depends on throughput.
+
+### VDF — Wesolowski over RSA-2048
+
+| `T` (steps) | Wall (ms) | Squarings/sec |
+|---:|---:|---:|
+| 1,000 | 4 | 497,661 |
+| 10,000 | 39 | 505,156 |
+| 100,000 | 395 | 505,564 |
+
+The third column is the one that matters: wall time grows linearly in `T` while throughput stays flat, which is what sequential work looks like. Throughput counts `2T` operations per evaluation — `T` for the output, `T` for the proof.
+
+### Groth16 — BN254
+
+| Metric | Erasure | Identity |
+|---|---:|---:|
+| R1CS constraints | **8,267** | ~1,500 |
+| Witness variables | 8,290 | — |
+| Public inputs | 5 | 1 |
+| Setup | 163 ms | 48 ms |
+| Prove | 157 ms | 56 ms |
+| Verify | 1 ms | 1 ms |
+| Proof size | 128 B | 128 B |
+
+Every one of the 8,267 constraints is load-bearing — Poseidon commitments to `y`, the ciphertext and the key; the in-circuit KDF; authenticated decryption; the containment terminal-state predicates. Removing any group breaks a test.
+
+### LockedBytes — `mlock` and wipe overhead
+
+| Size (B) | Alloc + lock (µs) | `mlock` |
+|---:|---:|:---:|
+| 32 | 8 | ok |
+| 256 | 1 | ok |
+| 1,024 | 0 | ok |
+| 4,096 | 0 | ok |
+| 65,536 | 1 | ok |
+
+Triple-pass wipe plus `munlock` on 32 bytes is under 1 µs. There is no performance argument for holding key material unlocked.
+
+## Calibrating `T`
+
+**Read this before deploying.** At ~505k squarings/sec and `2T` squarings per evaluation, the delay is `2T / 505,564` seconds.
+
+| Target delay | Required `T` |
+|---|---:|
+| 1 second | ~2.5 × 10⁵ |
+| 1 minute | ~1.5 × 10⁷ |
+| 1 hour | ~9.1 × 10⁸ |
+| 24 hours | ~2.2 × 10¹⁰ |
+
+Two consequences. `T` must be calibrated against **measured throughput on the machine that will run the mission** — `t_seconds` is only a watchdog and does not make the cryptography slower. And because a VDF bounds *sequential work* rather than wall time, `T` should be chosen against the **fastest plausible adversary**, not the deployment host: a GMP-backed or ASIC implementation finishes sooner.
+
+## Gaps
+
+Ordered by how much each limits the security claim.
+
+| Gap | Impact | Path |
+|---|---|---|
+| Single-party trusted setup | Setup operator can forge any proof. **The binding limitation on every verification claim, on-chain included** | BGM17 ceremony with independent participants publishing per-contribution proofs of knowledge |
+| `F_OS` axiomatized | The erasure claim reduces to it and no further | Bind an Intel TDX or AMD SEV-SNP measurement into the public inputs |
+| Circuit cannot bind memory location | Inherent to SNARKs — narrowed as far as cryptography allows; the remainder *is* `F_OS` | none; requires hardware attestation |
+| FHE inference is toy-scale | Two inputs, two hidden units. No accuracy or latency data at real model sizes | one PBS per hidden unit dominates; needs Concrete-ML or a GPU build |
+| `FheInt64` wraps silently on overflow | Real trained weights can overflow intermediate sums with no error | bound weight magnitude and layer width |
+| `/infer` uses `bincode::deserialize` on untrusted bytes | Size-capped but not a hardened parser | replace with `tfhe::safe_serialization` |
+| mTLS not enforced | Requests are authenticated but not confidential | wire rustls to the axum acceptor |
+| Shared fallback modulus | All deployments without `certN.bin` share one group | use `chronos-provision` to generate a per-mission modulus |
+| Contracts uncompiled | Nothing deployed; no `solc`/`forge` in CI | add a Foundry job |
+| No post-quantum VDF | Sequentiality rests on factoring | class-group VDF — unknown order by construction from a public discriminant. See [chiavdf](https://github.com/Chia-Network/chiavdf) |
 
 ## Build and test
 
@@ -112,153 +306,24 @@ cargo test --workspace
 
 # Static Linux binary
 rustup target add x86_64-unknown-linux-musl
-cargo build --release --target=x86_64-unknown-linux-musl
+cargo build --release --target=x86_64-unknown-linux-musl -p chronos-agent
 ```
 
-The suite includes an end-to-end lifecycle test (`crates/chronos-snark/tests/lifecycle.rs`) that crosses the provisioner/agent boundary with real sequential squarings and asserts the proof verifies against commitments the agent never chose. It also asserts the three negative cases: a fabricated key, an incomplete VDF, and a mission that never erased are each unprovable.
+The suite includes an end-to-end lifecycle test (`crates/chronos-snark/tests/lifecycle.rs`) that crosses the provisioner/agent boundary with **real sequential squarings** and asserts the proof verifies against commitments the agent never chose. It also asserts three negative cases: a fabricated key, an incomplete VDF, and a mission that never erased are each unprovable.
 
-## Benchmarks
-
-```bash
-cargo run -p chronos-bench --release
-```
-
-Measured on the development machine (Windows x86_64, release build, pure-Rust
-`num-bigint` backend, no GMP). Re-measure on your own target: the `T` calibration
-below depends on throughput, so these numbers are a method, not a constant.
-
-### VDF — Wesolowski over RSA-2048
-
-| T (steps) | Wall (ms) | Squarings/sec |
-|---|---|---|
-| 1,000 | 4 | 497,661 |
-| 10,000 | 39 | 505,156 |
-| 100,000 | 395 | 505,564 |
-
-The load-bearing column is the third one. Wall time grows linearly in `T` while
-throughput stays flat at ~505k squarings/sec, which is what sequential work is
-supposed to look like. Squarings/sec counts `2T` operations per evaluation — `T`
-for the output, `T` more for the Wesolowski proof.
-
-### Groth16 erasure proof — BN254
-
-| Metric | Value |
-|---|---|
-| R1CS constraints | **8,267** |
-| Witness variables | 8,290 |
-| Public inputs | 5 |
-| Setup | 163 ms |
-| Prove | 157 ms |
-| Verify | 1 ms |
-| Proof size | 128 bytes |
-
-All 8,267 constraints are load-bearing: Poseidon commitments to `y`, the
-ciphertext and the key; the in-circuit KDF; authenticated decryption; and the
-containment terminal-state predicates. Removing any one breaks a test.
-
-### Groth16 EAIP identity proof — BN254
-
-| Metric | Value |
-|---|---|
-| Setup | 48 ms |
-| Prove | 56 ms |
-| Verify | 1 ms |
-| Proof size | 128 bytes |
-
-### LockedBytes — `mlock` and wipe overhead
-
-| Size (bytes) | Alloc + lock (µs) | `mlock` succeeded |
-|---|---|---|
-| 32 | 8 | yes |
-| 256 | 1 | yes |
-| 1,024 | 0 | yes |
-| 4,096 | 0 | yes |
-| 65,536 | 1 | yes |
-
-Triple-pass wipe plus `munlock` on 32 bytes: under 1 µs. Memory locking is free
-enough that there is no argument for holding key material unlocked.
-
-### Calibrating `T` — read this before deploying
-
-At ~505k squarings/sec and `2T` squarings per evaluation, the delay is
-`2T / 505,564` seconds. That makes the shipped default of `t_vdf_steps = 1,000,000`
-a **≈4 second** time-lock, not the hour its `t_seconds` companion implies.
-
-| Target delay | Required `T` |
-|---|---|
-| 1 second | ~2.5 × 10⁵ |
-| 1 minute | ~1.5 × 10⁷ |
-| 1 hour | ~9.1 × 10⁸ |
-| 24 hours | ~2.2 × 10¹⁰ |
-
-Two things follow. First, `T` must be calibrated against measured throughput on
-the machine that will run the mission — `t_seconds` is only a watchdog, and it does
-not make the cryptography slower. Second, an adversary with faster hardware
-finishes sooner; the VDF bounds *sequential* work, not wall time, so `T` should be
-chosen against the fastest plausible attacker rather than the deployment host.
-
-This calibration gap existed because the previous benchmark understated VDF
-throughput by roughly 50×, which made `T = 10⁶` look like a reasonable default.
-
-### What the previous figures measured
-
-Both earlier tables were withdrawn rather than adjusted, because both measured
-something other than what they claimed.
-
-**VDF** (was: T=1,000 → 12,092 ms; T=10,000 → 16,595 ms; T=100,000 → 9,828 ms).
-Real measurements of the wrong thing: wall time was dominated by an `O(√n)`
-trial-division primality test inside the Fiat-Shamir challenge derivation, whose
-cost depends on the hash-derived seed and **not** on `T`. That is why 100× the
-sequential work appeared to finish *faster*. `is_prime` is now deterministic
-Miller-Rabin, and `test_wall_time_scales_with_t` fails if evaluation ever becomes
-constant-time in `T` again.
-
-**Groth16** (was: setup 3.2 s, proving 1.6 s, ~180,000 constraints). Measured
-against a circuit padded with roughly 160,000 filler multiplications. Setup is now
-20× faster and proving 10× faster because the work removed was never doing
-anything. Proof size is unchanged at 128 bytes — Groth16 proofs are constant-size
-regardless of circuit size.
-
-## Gaps
-
-Ordered by how much they limit the security claim.
-
-| Gap | Impact |
-|-----|--------|
-| Trusted setup is single-party, not a ceremony | Setup operator holds the trapdoor and can forge any proof. This is the binding limitation on every verification claim, on-chain included. Needs BGM17 with independent participants publishing per-contribution proofs of knowledge |
-| `F_OS` axiomatized, not attested | The erasure claim reduces to it and no further. Needs Intel TDX or AMD SEV-SNP attestation bound into the proof's public inputs |
-| Circuit cannot bind memory location | Inherent to SNARKs: the prover supplies the post-wipe buffer. Narrowed as far as cryptography allows; the remainder is `F_OS` |
-| One fixed public modulus when `certN.bin` is absent | All fallback deployments share a group. `chronos-provision` generates a per-mission modulus instead; the fallback is RSA-2048, published and unfactored |
-| mTLS not enforced by axum | Requests are authenticated but not confidential. Do not expose to an untrusted network |
-| `/infer` uses `bincode::deserialize` on untrusted bytes | Size-capped, but not a hardened parser. Replace with `tfhe::safe_serialization` before exposing the endpoint |
-| `FheInt64` wraps silently on overflow | Real trained weights can overflow intermediate sums with no error; weight magnitude and layer width must be bounded |
-| MLP verified only at toy scale | Two inputs, two hidden units. No accuracy or latency data at real model sizes; one PBS per hidden unit dominates cost |
-| Contracts uncompiled and unaudited | No `solc`/`forge` in CI. The 5-input ABI matches `chronos_snark::circuit::PUBLIC_INPUT_COUNT`, which a test pins, but nothing has been deployed |
-| Benchmarks unmeasured | See above |
-| No post-quantum VDF | The Wesolowski VDF rests on factoring. A class-group VDF is the realistic path — groups of imaginary quadratic orders have unknown order by construction from a public discriminant, which removes the modulus trust question rather than working around it. See [chiavdf](https://github.com/Chia-Network/chiavdf) |
-
-## Paper divergences
-
-Where the v3 preprint and this repository disagree, the repository is correct.
-
-| Paper claim | Reality |
-|---|---|
-| Erasure circuit has ~180,000 R1CS constraints | ~160,000 were filler multiplications from `while count < TARGET` loops. The real circuit is a few thousand constraints and encodes strictly more |
-| Gadget 3 is "AES-GCM key schedule and decryption" | It terminated in `sk[0] * 1 = sk[0]`, a tautology. AES-GCM is replaced by Chronos-AEAD so decryption is genuinely encoded |
-| Gadget 2 is "HKDF via Poseidon x^5 sponge" | The sponge had no round constants and a non-invertible linear layer, and its output was discarded. Replaced with real Poseidon; the KDF is now encoded and checked |
-| EAIP root is `R = SHA-256(y)`, proven in ~10,000 constraints | A SHA-256 pre-image proof was never implemented. The root is now a Poseidon digest and the pre-image relation is genuinely proven |
-| Trusted setup is a "3-party simulated MPC ceremony" where "no single party's contribution is sufficient" | One process, three local RNGs, one party, one trapdoor. XOR-folding local RNGs adds no security property |
-| MPC generation of `N` is mandatory | Only when the agent is its own puzzle creator. With a distinct provisioner — which the protocol requires anyway — that party may generate `N` and retain `φ(N)`, which is exactly RSW time-lock puzzles. See `chronos-provision` |
-| Benchmark figures in §6 | Withdrawn; see above |
-| Public inputs `y[0]`, `wipe_pattern` | Single bytes, giving 8 bits of binding. Now five full-width field elements |
+> **Note:** dependencies are compiled at `opt-level = 3` even in debug builds
+> (see `[profile.dev.package."*"]` in `Cargo.toml`). TFHE key generation is
+> 50–100× slower unoptimised, which makes the suite effectively non-terminating.
 
 ## Further reading
 
-- [AUDIT.md](AUDIT.md) — full code audit log, including the defects found in this codebase and how they were fixed
-- [SECURITY.md](SECURITY.md) — UC security theorem and simulator
-- [DEPLOYMENT.md](DEPLOYMENT.md) — deployment instructions
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — third-party code and attribution
-- [contracts/README.md](contracts/README.md) — on-chain verification
+| Document | Contents |
+|---|---|
+| [AUDIT.md](AUDIT.md) | full audit log — every defect found in this codebase and how it was fixed |
+| [SECURITY.md](SECURITY.md) | UC security theorem and simulator construction |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | deployment instructions |
+| [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | third-party code and attribution |
+| [contracts/README.md](contracts/README.md) | on-chain verification |
 
 ## License
 

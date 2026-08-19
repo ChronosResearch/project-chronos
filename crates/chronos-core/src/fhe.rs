@@ -12,6 +12,18 @@ use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheInt64, ServerKey};
 /// `tfhe::safe_serialization` — see [`FheEngine::evaluate_ciphertext`].
 const MAX_CIPHERTEXT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
+/// Assumed bound on `|input|` when validating a model for overflow.
+///
+/// 255 covers 8-bit unsigned features such as pixel intensities, which is the
+/// common quantisation for this class of model. It is an *assumption about the
+/// caller*, not something the agent can check: `/infer` receives ciphertexts and
+/// cannot inspect their plaintext. A client that encrypts values outside this
+/// range can still cause `FheInt64` to wrap silently.
+///
+/// Callers who know a tighter or wider bound should validate the model directly
+/// with [`MlpWeights::validate`] before installing it.
+const DEFAULT_INPUT_ABS_MAX: i64 = 255;
+
 /// Holds the FHE server evaluation key in a `RwLock` so many concurrent
 /// inference requests can read it without contention, while a single writer
 /// can update it atomically.
@@ -47,6 +59,12 @@ impl FheEngine {
 
         set_server_key(server_key.clone());
 
+        // The hidden layer is evaluated in parallel, and `tfhe-rs` holds the
+        // server key in thread-local storage. Without this broadcast the first
+        // operation dispatched to a rayon worker panics with "server key not
+        // set", from inside a parallel iterator where the cause is hard to read.
+        crate::mlp::install_server_key_on_rayon_threads(&server_key);
+
         {
             let mut guard = self.server_key.write().map_err(|_| {
                 ChronosError::Fhe("ServerKey RwLock poisoned during key install".into())
@@ -66,7 +84,7 @@ impl FheEngine {
     /// Returns [`ChronosError::Fhe`] if the weights are malformed for
     /// `input_dim`, or if the lock is poisoned.
     pub fn install_weights(&self, weights: MlpWeights, input_dim: usize) -> ChronosResult<()> {
-        weights.validate(input_dim)?;
+        weights.validate(input_dim, DEFAULT_INPUT_ABS_MAX)?;
         let mut guard = self
             .weights
             .write()
@@ -132,7 +150,7 @@ impl FheEngine {
         })?;
 
         let mlp = TwoLayerMlp::new(weights.clone());
-        let result = mlp.evaluate(&inputs)?;
+        let result = mlp.evaluate(&inputs, DEFAULT_INPUT_ABS_MAX)?;
 
         bincode::serialize(&result)
             .map_err(|e| ChronosError::Fhe(format!("result serialization failed: {e}")))
@@ -161,8 +179,10 @@ mod tests {
         MlpWeights {
             hidden_weights: vec![vec![1, -1], vec![-1, 1]],
             hidden_bias: vec![0, 0],
-            output_weights: vec![2, 3],
-            output_bias: 1,
+            // One row per output unit. A classifier returns a logit vector, so
+            // this is `Vec<Vec<i64>>` rather than a single weight row.
+            output_weights: vec![vec![2, 3]],
+            output_bias: vec![1],
         }
     }
 

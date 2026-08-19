@@ -6,6 +6,11 @@ edition = "2021"
 [dependencies]
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
+# Hidden units are mutually independent and each costs a PBS, so the hidden layer
+# parallelises close to linearly. `tfhe-rs` keeps the server key in thread-local
+# storage, so `mlp::install_server_key_on_rayon_threads` must run before any
+# parallel evaluation.
+rayon = "1.10"
 thiserror  = { workspace = true }
 zeroize    = { workspace = true }
 libc       = { workspace = true }
