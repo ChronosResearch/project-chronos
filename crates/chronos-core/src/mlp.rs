@@ -24,17 +24,26 @@
 //! individual `shortint` blocks, which means handling radix decomposition
 //! manually for no gain.
 //!
-//! # Parallelism
+//! # Why evaluation is serial
 //!
-//! Hidden units are mutually independent, as are output units given the hidden
-//! layer, so both layers are evaluated with `rayon`. This is close to linear
-//! speedup because PBS is compute-bound and does not contend on shared state.
+//! Hidden units are mutually independent, so the layer looks like an obvious
+//! candidate for `rayon`. An earlier revision did exactly that and it was wrong.
 //!
-//! `tfhe-rs` keeps the server key in thread-local storage, so **every rayon
-//! worker must have it installed** or evaluation panics on the first operation
-//! off the main thread. [`crate::fhe::FheEngine::generate_and_install_keys`]
-//! broadcasts it across the pool for exactly this reason. If you drive this
-//! module directly, call [`install_server_key_on_rayon_threads`] first.
+//! `tfhe-rs` keeps the server key in **thread-local storage**. Parallelising with
+//! the global rayon pool therefore requires broadcasting the key to every worker
+//! — and a process containing more than one key pair has no safe way to do that.
+//! Each broadcast overwrites the previous one, so an evaluation using key A can
+//! land on a worker holding key B and decrypt to noise. In this codebase
+//! `FheEngine` and the test suite each hold their own keys, which is precisely
+//! that situation: it produced `[5368744488275843309, ...]` where `[4, 109, 6]`
+//! was expected, and it was scheduling-dependent, so it passed locally on 12
+//! threads and failed in CI on 2.
+//!
+//! The correct fix is a dedicated `rayon::ThreadPool` per engine, built with a
+//! `start_handler` that installs that engine's key, so no pool is ever shared
+//! between key pairs. That is worth doing and is not done here — a silent
+//! wrong-answer bug is a bad trade for a speedup that was never measured.
+//! Evaluation is serial and correct.
 //!
 //! # Overflow
 //!
@@ -45,23 +54,10 @@
 //! could overflow for a declared input bound. Check the model once at load time
 //! rather than discovering this from a wrong classification.
 
-use rayon::prelude::*;
 use tfhe::prelude::*;
-use tfhe::{FheBool, FheInt64, ServerKey};
+use tfhe::{FheBool, FheInt64};
 
 use crate::error::{ChronosError, ChronosResult};
-
-/// Install `server_key` into the thread-local storage of every rayon worker.
-///
-/// `tfhe-rs` stores the server key per-thread. Without this, any operation
-/// dispatched to a rayon worker panics with "server key not set", and the panic
-/// surfaces from inside a parallel iterator where it is awkward to attribute.
-///
-/// Idempotent and cheap enough to call after each key installation.
-pub fn install_server_key_on_rayon_threads(server_key: &ServerKey) {
-    let key = server_key.clone();
-    rayon::broadcast(|_| tfhe::set_server_key(key.clone()));
-}
 
 /// Compute `sum(inputs[i] * weights[i]) + bias` homomorphically.
 ///
@@ -322,8 +318,8 @@ impl TwoLayerMlp {
     /// or if it could overflow at `input_abs_max`.
     ///
     /// # Panics
-    /// Panics if the server key is not installed on the rayon worker threads —
-    /// see [`install_server_key_on_rayon_threads`].
+    /// Panics if the server key is not installed on the calling thread. Install it
+    /// with `tfhe::set_server_key` before calling.
     pub fn evaluate(
         &self,
         inputs: &[FheInt64],
@@ -331,22 +327,22 @@ impl TwoLayerMlp {
     ) -> ChronosResult<Vec<FheInt64>> {
         self.weights.validate(inputs.len(), input_abs_max)?;
 
-        // Hidden layer: independent per unit, one PBS each. This is the dominant
-        // term in latency, so it is the layer worth parallelising.
+        // Hidden layer: one PBS per unit, the dominant latency term. Serial — see
+        // the module documentation for why parallelising this needs a per-engine
+        // thread pool rather than the global one.
         let hidden: Vec<FheInt64> = self
             .weights
             .hidden_weights
-            .par_iter()
-            .zip(self.weights.hidden_bias.par_iter())
+            .iter()
+            .zip(self.weights.hidden_bias.iter())
             .map(|(hw, &hb)| dot_product(inputs, hw, hb).map(|z| relu(&z)))
             .collect::<ChronosResult<Vec<_>>>()?;
 
-        // Output layer: no activation, so no PBS. Still parallel because each
-        // output is an independent dot product over the full hidden layer.
+        // Output layer: no activation, so no PBS.
         self.weights
             .output_weights
-            .par_iter()
-            .zip(self.weights.output_bias.par_iter())
+            .iter()
+            .zip(self.weights.output_bias.iter())
             .map(|(ow, &ob)| dot_product(&hidden, ow, ob))
             .collect()
     }
@@ -419,43 +415,27 @@ mod tests {
 
     /// One key pair shared by every test in this module.
     ///
-    /// # Why this must be shared
-    ///
-    /// `tfhe-rs` holds the server key in thread-local storage, and rayon's pool is
-    /// process-global. Generating a fresh key per test meant each test broadcast
-    /// *its own* server key across the same shared pool, so a test's parallel
-    /// evaluation could land on a worker still holding a different test's key.
-    /// Decryption then returned noise — the observed symptom was
-    /// `[5368744488275843309, -3304781710212550179, ...]` where `[4, 109, 6]` was
-    /// expected, which reads like a homomorphic arithmetic bug and is not one.
-    ///
-    /// Because `cargo test` runs tests on multiple threads, this race was
-    /// scheduling-dependent: the same code passed or failed run to run. Sharing a
-    /// single key makes the broadcast idempotent and the pool consistent, and has
-    /// the side benefit that key generation is paid once rather than per test.
+    /// Sharing is no longer required for correctness — evaluation is serial and
+    /// the server key is thread-local, so tests cannot interfere — but key
+    /// generation is by far the slowest thing in this module, and paying it once
+    /// per process rather than once per test takes the suite from minutes to
+    /// seconds.
     fn shared_keys() -> &'static (tfhe::ClientKey, tfhe::ServerKey) {
         use std::sync::OnceLock;
         static KEYS: OnceLock<(tfhe::ClientKey, tfhe::ServerKey)> = OnceLock::new();
         KEYS.get_or_init(|| {
             let config = ConfigBuilder::default().build();
-            let (client_key, server_key) = generate_keys(config);
-            install_server_key_on_rayon_threads(&server_key);
-            (client_key, server_key)
+            generate_keys(config)
         })
     }
 
     /// Install the shared server key on the calling test thread and return the
     /// client key.
     ///
-    /// The rayon workers are handled once in [`shared_keys`]; this covers the test
-    /// thread itself, which needs the key for any operation performed outside a
-    /// parallel iterator — `relu` called directly, for instance.
-    ///
     /// Returns an owned clone rather than a `&'static` reference so call sites can
     /// keep writing `encrypt(v, &client_key)`. `FheTryEncrypt` is implemented for
     /// `&ClientKey`, so handing back a reference makes every call site pass
-    /// `&&ClientKey` and fail to resolve the trait. Cloning the client key is far
-    /// cheaper than generating one, which is the cost this shared setup removes.
+    /// `&&ClientKey` and fail to resolve the trait.
     fn setup_keys() -> tfhe::ClientKey {
         let (client_key, server_key) = shared_keys();
         set_server_key(server_key.clone());
@@ -589,7 +569,7 @@ mod tests {
         let keygen = Instant::now();
         let client_key = setup_keys();
         println!("\nkey generation : {:?}", keygen.elapsed());
-        println!("threads        : {}", rayon::current_num_threads());
+        println!("evaluation     : serial (see module docs)");
 
         println!(
             "\n{:>5} {:>7} {:>8} {:>9} {:>6} {:>12} {:>11}",

@@ -520,7 +520,6 @@ dependencies = [
  "libc",
  "num-bigint",
  "num-traits",
- "rayon",
  "sha2",
  "tfhe",
  "thiserror 2.0.19",

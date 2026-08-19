@@ -59,12 +59,6 @@ impl FheEngine {
 
         set_server_key(server_key.clone());
 
-        // The hidden layer is evaluated in parallel, and `tfhe-rs` holds the
-        // server key in thread-local storage. Without this broadcast the first
-        // operation dispatched to a rayon worker panics with "server key not
-        // set", from inside a parallel iterator where the cause is hard to read.
-        crate::mlp::install_server_key_on_rayon_threads(&server_key);
-
         {
             let mut guard = self.server_key.write().map_err(|_| {
                 ChronosError::Fhe("ServerKey RwLock poisoned during key install".into())
@@ -238,9 +232,15 @@ mod tests {
         let out_bytes = engine
             .evaluate_ciphertext(&payload)
             .expect("evaluation must succeed");
-        let out_ct: FheInt64 =
+
+        // One ciphertext per output unit. Deserializing this as a bare `FheInt64`
+        // fails inside tfhe's own decoder with a confusing message about
+        // `CiphertextModulus` bit widths, because it reads the Vec length prefix
+        // as the start of a ciphertext.
+        let out_cts: Vec<FheInt64> =
             bincode::deserialize(&out_bytes).expect("result must deserialize");
-        let out: i64 = out_ct.decrypt(&client_key);
+        assert_eq!(out_cts.len(), 1, "toy model has a single output unit");
+        let out: i64 = out_cts[0].decrypt(&client_key);
 
         let h0 = (5 * 1 + 3 * -1).max(0);
         let h1 = (5 * -1 + 3 * 1).max(0);
