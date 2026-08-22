@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CHRONOS — Ephemeral AI agents with provable self-termination</title>
+<meta name="description" content="An open-source Rust prototype producing a 128-byte artifact that proves an autonomous agent stopped on time and destroyed its key, without trusting the operator.">
+<meta property="og:title" content="CHRONOS — Ephemeral AI agents with provable self-termination">
+<meta property="og:description" content="Homomorphic encryption, a verifiable delay function, and a zero-knowledge erasure proof, composed so an agent cannot outlive its deadline.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink:      #101820;
+    --ink-soft: #4a5560;
+    --ink-mute: #7b8794;
+    --line:     #d9e2e8;
+    --bg:       #eef4f7;
+    --card:     #ffffff;
+    --accent:   #1d6f8b;
+    --warm:     #b45309;
+    --pill:     #c8e6d0;
+    --radius:   14px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 300;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+    margin: 0;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 26px; }
+
+  /* ── Navigation ─────────────────────────────────────────────────────────── */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(238,244,247,0.88);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid transparent;
+  }
+  .nav-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 18px; padding: 16px 0;
+  }
+  .brand {
+    font-family: 'Fraunces', serif; font-size: 19px; font-weight: 400;
+    letter-spacing: 0.14em; color: var(--ink); text-transform: uppercase;
+  }
+  .brand small {
+    display: block; font-family: 'Inter', sans-serif; font-size: 9.5px;
+    letter-spacing: 0.24em; color: var(--ink-mute); margin-top: 1px;
+  }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 999px; padding: 7px 16px;
+    font-size: 13.5px; color: var(--ink-soft); white-space: nowrap;
+  }
+  .pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+  .pill.solid {
+    background: var(--pill); border-color: transparent; color: #14532d; font-weight: 500;
+  }
+
+  /* ── Hero ───────────────────────────────────────────────────────────────── */
+  .hero { padding: 78px 0 8px; text-align: center; }
+  .hero h1 { font-size: clamp(2.5rem, 5.6vw, 4.15rem); }
+  .hero .lede {
+    max-width: 660px; margin: 24px auto 0;
+    font-size: 18px; color: var(--ink-soft);
+  }
+  .hero .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 30px; }
+  .btn {
+    border-radius: 999px; padding: 11px 24px; font-size: 14.5px; font-weight: 500;
+    border: 1px solid var(--ink); color: var(--ink); background: transparent;
+  }
+  .btn.fill { background: var(--ink); color: #fff; }
+  .btn:hover { text-decoration: none; opacity: 0.86; }
+
+  /* Orb — evokes sequential work: rings that must be traversed in order. */
+  .orb-shell { display: flex; justify-content: center; padding: 46px 0 8px; }
+  .orb { width: min(340px, 74vw); height: min(340px, 74vw); position: relative; }
+  .orb svg { width: 100%; height: 100%; display: block; }
+  .ring { fill: none; stroke-linecap: round; transform-origin: 200px 200px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .r1 { animation: spin 46s linear infinite; }
+    .r2 { animation: spin 34s linear infinite reverse; }
+    .r3 { animation: spin 22s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  }
+
+  /* ── Sections ───────────────────────────────────────────────────────────── */
+  section { padding: 58px 0; }
+  .eyebrow {
+    font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--ink-mute); margin-bottom: 12px;
+  }
+  h2 { font-size: clamp(1.7rem, 3.1vw, 2.4rem); margin-bottom: 8px; }
+  .sub { color: var(--ink-soft); max-width: 660px; margin-top: 10px; }
+
+  .grid { display: grid; gap: 18px; margin-top: 30px; }
+  .g2 { grid-template-columns: repeat(2, 1fr); }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 860px) { .g2, .g3 { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 24px 24px 22px;
+  }
+  .card h3 { font-size: 1.22rem; margin-bottom: 8px; }
+  .card p { margin: 0; color: var(--ink-soft); font-size: 14.7px; }
+  .tagline {
+    display: inline-block; font-size: 10.5px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 11px; margin-bottom: 13px;
+  }
+
+  /* Numbers */
+  .stat { text-align: center; }
+  .stat .n {
+    font-family: 'Fraunces', serif; font-size: 2.35rem; font-weight: 400;
+    color: var(--ink); line-height: 1.05;
+  }
+  .stat .n span { font-size: 1rem; color: var(--ink-mute); }
+  .stat .l { font-size: 12.5px; color: var(--ink-mute); margin-top: 6px; }
+
+  /* Table */
+  .tablewrap {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden; margin-top: 26px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { padding: 13px 20px; text-align: left; }
+  thead th {
+    font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-mute); font-weight: 600; border-bottom: 1px solid var(--line);
+  }
+  tbody tr + tr td { border-top: 1px solid #eef2f5; }
+  td.mono, .mono { font-family: 'JetBrains Mono', monospace; font-size: 13.5px; }
+  caption {
+    caption-side: bottom; padding: 13px 20px; font-size: 12.5px;
+    color: var(--ink-mute); text-align: left; border-top: 1px solid var(--line);
+  }
+
+  /* Code */
+  pre {
+    background: #0f1a1f; color: #dbe7ec; border-radius: var(--radius);
+    padding: 20px 22px; overflow-x: auto; margin: 20px 0 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 13.3px; line-height: 1.75;
+  }
+  pre .c { color: #7d97a3; }
+  pre .p { color: #8fd6a9; }
+
+  /* Honest-limits block */
+  .limits {
+    background: #fdf6ec; border: 1px solid #f0dfc4;
+    border-left: 3px solid var(--warm);
+    border-radius: var(--radius); padding: 24px 26px; margin-top: 26px;
+  }
+  .limits h3 { font-size: 1.15rem; margin-bottom: 12px; color: #7c3d09; }
+  .limits ul { margin: 0; padding-left: 19px; color: #6b4318; font-size: 14.7px; }
+  .limits li { margin-bottom: 9px; }
+  .limits li:last-child { margin-bottom: 0; }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 28px 0 0; }
+  .steps li {
+    counter-increment: s; position: relative; padding-left: 46px;
+    margin-bottom: 20px; color: var(--ink-soft); font-size: 15px;
+  }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 0; top: -1px;
+    width: 29px; height: 29px; border-radius: 50%;
+    background: var(--card); border: 1px solid var(--line);
+    font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+    display: flex; align-items: center; justify-content: center; color: var(--accent);
+  }
+  .steps strong { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--line); margin-top: 34px;
+    padding: 34px 0 46px; font-size: 13.5px; color: var(--ink-mute);
+  }
+  .foot-inner { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+  .divider { height: 1px; background: var(--line); }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a href="#top" class="brand" style="text-decoration:none">
+      Chronos<small>Research</small>
+    </a>
+    <nav class="pills">
+      <a class="pill" href="#problem">Problem</a>
+      <a class="pill" href="#how">How it works</a>
+      <a class="pill" href="#results">Results</a>
+      <a class="pill" href="#verify">Verify</a>
+      <a class="pill" href="#limits">Limits</a>
+      <a class="pill solid" href="https://github.com/ChronosResearch/project-chronos">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<a id="top"></a>
+<div class="wrap hero">
+  <h1>An agent that cannot<br>outlive its deadline.</h1>
+  <p class="lede">
+    CHRONOS composes homomorphic encryption, a verifiable delay function, and a
+    zero-knowledge erasure proof so that a 128-byte artifact shows an autonomous
+    agent stopped on time and destroyed its key — without trusting the agent or
+    whoever ran it.
+  </p>
+  <div class="cta">
+    <a class="btn fill" href="https://github.com/ChronosResearch/project-chronos">Read the code</a>
+    <a class="btn" href="#verify">Verify it yourself</a>
+  </div>
+</div>
+
+<div class="orb-shell">
+  <div class="orb">
+    <svg viewBox="0 0 400 400" role="img" aria-label="Concentric rings representing sequential work">
+      <defs>
+        <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"  stop-color="#7fc9c2"/>
+          <stop offset="100%" stop-color="#4a90b8"/>
+        </linearGradient>
+        <linearGradient id="g2" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0%"  stop-color="#9fd9cf"/>
+          <stop offset="100%" stop-color="#6aa8cc"/>
+        </linearGradient>
+        <radialGradient id="core">
+          <stop offset="0%"   stop-color="#b9e4f0"/>
+          <stop offset="100%" stop-color="#7fb7d4" stop-opacity="0.32"/>
+        </radialGradient>
+      </defs>
+      <circle cx="200" cy="200" r="54" fill="url(#core)"/>
+      <circle class="ring r1" cx="200" cy="200" r="168" stroke="url(#g1)" stroke-width="2.5"
+              stroke-dasharray="5 13" opacity="0.85"/>
+      <circle class="ring r2" cx="200" cy="200" r="132" stroke="url(#g2)" stroke-width="3"
+              stroke-dasharray="3 11" opacity="0.8"/>
+      <circle class="ring r3" cx="200" cy="200" r="96"  stroke="url(#g1)" stroke-width="3.5"
+              stroke-dasharray="2 9"  opacity="0.75"/>
+    </svg>
+  </div>
+</div>
+
+<!-- ── Problem ───────────────────────────────────────────────────────────── -->
+<section id="problem">
+  <div class="wrap">
+    <div class="eyebrow">The gap</div>
+    <h2>Four questions with no verifiable answer</h2>
+    <p class="sub">
+      Autonomous agents are being handed real credentials — cloud accounts, payment
+      rails, code execution — for bounded periods. Increasingly the party bearing
+      the risk is not the party operating the agent.
+    </p>
+
+    <div class="grid g2">
+      <div class="card">
+        <span class="tagline">Question 1</span>
+        <h3>Did it stop on time?</h3>
+        <p>Logs are written and held by the operator. They record what the agent reported, which establishes the provenance of a claim rather than its truth.</p>
+      </div>
+      <div class="card">
+        <span class="tagline">Question 2</span>
+        <h3>Did it stay in scope?</h3>
+        <p>Scope enforcement runs inside operator-controlled code. Nothing outside that code can confirm the boundary held.</p>
+      </div>
+      <div class="card">
+        <span class="tagline">Question 3</span>
+        <h3>Was access destroyed?</h3>
+        <p>Key deletion is operator-attested. A console showing "deprovisioned" is not evidence that key material is gone.</p>
+      </div>
+      <div class="card">
+        <span class="tagline">Question 4</span>
+        <h3>Can anyone else check?</h3>
+        <p>Today, no. Every answer above reduces to the operator asserting it — the party with the strongest incentive to assert it.</p>
+      </div>
+    </div>
+
+    <p class="sub" style="margin-top:26px">
+      This is not a claim that operators lie. It is a claim that a guarantee which
+      depends on the honesty of the party with the most to lose from admitting
+      otherwise is not a guarantee.
+    </p>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ── How ───────────────────────────────────────────────────────────────── -->
+<section id="how">
+  <div class="wrap">
+    <div class="eyebrow">Mechanism</div>
+    <h2>Two properties do the work</h2>
+
+    <div class="grid g2">
+      <div class="card">
+        <span class="tagline">Property one</span>
+        <h3>Time-bound release by construction</h3>
+        <p>
+          The agent's key is sealed under a value that requires <span class="mono">T</span>
+          sequential squarings to compute. No parallelism shortens it, no policy
+          decision governs it, and no network connection is needed for it to hold.
+          The deadline is a property of arithmetic, not of anyone's cooperation.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tagline">Property two</span>
+        <h3>Proof-carrying containment</h3>
+        <p>
+          Containment is expressed as five order-theoretic invariants over a
+          lattice-valued capability state: capabilities only shrink, budgets only
+          decrease, the lifecycle only advances, no admitted operation outlives the
+          deadline, and shutdown is reachable from every state. The execution
+          summary is bound into the same proof that attests key destruction.
+        </p>
+      </div>
+    </div>
+
+    <p class="sub" style="margin-top:24px">
+      One record therefore covers both what the agent destroyed and how it behaved.
+      An agent that ran a mission but never erased cannot produce the proof at all.
+      The nearest existing work is <em>certified deletion</em>, which certifies the
+      fate of a ciphertext; the composition here binds classical erasure to a
+      capability-monitor trace instead.
+    </p>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ── Results ───────────────────────────────────────────────────────────── -->
+<section id="results">
+  <div class="wrap">
+    <div class="eyebrow">Measured, not asserted</div>
+    <h2>What the prototype actually does</h2>
+    <p class="sub">
+      Every figure below comes from a test in the repository, on a recorded machine.
+      Earlier revisions of this work asserted numbers that did not hold; those
+      corrections are catalogued in the audit log.
+    </p>
+
+    <div class="grid g3" style="margin-top:32px">
+      <div class="card stat"><div class="n">8,267</div><div class="l">R1CS constraints, all load-bearing</div></div>
+      <div class="card stat"><div class="n">128 <span>bytes</span></div><div class="l">Proof size</div></div>
+      <div class="card stat"><div class="n">1 <span>ms</span></div><div class="l">Verification time</div></div>
+      <div class="card stat"><div class="n">505<span>k/s</span></div><div class="l">VDF squarings, constant in T</div></div>
+      <div class="card stat"><div class="n">1,728</div><div class="l">Abstract states checked at startup</div></div>
+      <div class="card stat"><div class="n">~2 <span>s</span></div><div class="l">Per homomorphic multiplication</div></div>
+    </div>
+
+    <h3 style="margin-top:44px; font-size:1.3rem">Homomorphic inference scaling</h3>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Network</th><th>Multiplications</th><th>Inference</th><th>Per multiplication</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">8 → 4 → 2</td><td class="mono">40</td><td class="mono">79.0 s</td><td class="mono">1975 ms</td></tr>
+          <tr><td class="mono">16 → 8 → 10</td><td class="mono">208</td><td class="mono">383.9 s</td><td class="mono">1846 ms</td></tr>
+          <tr><td class="mono">32 → 8 → 10</td><td class="mono">336</td><td class="mono">696.9 s</td><td class="mono">2074 ms</td></tr>
+        </tbody>
+        <caption>
+          Intel Core 5 210H, 8 physical cores, 16 GB, mains power. All three shapes
+          verified against a plaintext reference. Per-operation cost is flat as the
+          network grows, so the ceiling is the constant rather than the scaling —
+          <span class="mono">FheInt64</span> carries 64 bits where the worst-case
+          magnitude needs about 23, making a narrower ciphertext type the obvious
+          next optimisation.
+        </caption>
+      </table>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ── Verify ────────────────────────────────────────────────────────────── -->
+<section id="verify">
+  <div class="wrap">
+    <div class="eyebrow">Reproduce</div>
+    <h2>Check it yourself in five minutes</h2>
+    <p class="sub">
+      Nothing in the demonstration is staged. The VDF performs real sequential
+      squarings, the key is genuinely sealed and genuinely opened, and the proof is
+      produced by the agent then verified against commitments the agent did not
+      choose.
+    </p>
+
+<pre><span class="c"># Clone and run the full protocol end to end</span>
+git clone https://github.com/ChronosResearch/project-chronos
+cd project-chronos
+
+<span class="c"># Windows</span>
+<span class="p">pwsh</span> scripts/demo.ps1 -T 500000
+
+<span class="c"># Linux and macOS</span>
+<span class="p">bash</span> scripts/demo.sh --t 500000
+
+<span class="c"># Every measurable claim, collected with a machine spec</span>
+<span class="p">cargo</span> test --workspace</pre>
+
+    <ol class="steps">
+      <li><strong>The provisioner seals a key</strong> under a time-lock requiring T sequential squarings, and publishes commitments it cannot later change.</li>
+      <li><strong>The agent verifies its containment axioms</strong> exhaustively before accepting a single request, and refuses to start if any invariant fails.</li>
+      <li><strong>The agent works</strong> over encrypted inputs, never seeing plaintext.</li>
+      <li><strong>The deadline arrives by arithmetic.</strong> No signal is sent and none is needed.</li>
+      <li><strong>The agent erases and proves it</strong>, emitting 128 bytes that a verifier checks in a millisecond without trusting the agent or its operator.</li>
+    </ol>
+  </div>
+</section>
+
+<div class="wrap"><div class="divider"></div></div>
+
+<!-- ── Limits ────────────────────────────────────────────────────────────── -->
+<section id="limits">
+  <div class="wrap">
+    <div class="eyebrow">Scope</div>
+    <h2>What this is not</h2>
+    <p class="sub">
+      CHRONOS is a verification primitive, not an alignment technique. It does not
+      make an agent's objectives safer, detect deception, or constrain what a
+      sufficiently capable system might do inside its window. It narrows one thing:
+      the distance between what an operator asserts about shutdown and scope, and
+      what a third party can check.
+    </p>
+
+    <div class="limits">
+      <h3>Two limitations are load-bearing, and we do not minimise them</h3>
+      <ul>
+        <li>
+          <strong>The trusted setup is single-party.</strong> Verification is
+          therefore conditional on trusting whoever ran it. This binds every claim
+          above. It is fixable by a standard multi-party ceremony — engineering,
+          not research.
+        </li>
+        <li>
+          <strong>No argument in a circuit can establish that memory was freed.</strong>
+          A SNARK constrains values, not memory locations, so the prover supplies
+          the post-wipe buffer and could retain a copy elsewhere. The residual
+          assumption is that the operating system honours memory locking, keeps
+          pages out of swap, and suppresses core dumps. Discharging it needs
+          hardware attestation bound into the proof's public inputs, which is not
+          implemented.
+        </li>
+        <li>
+          <strong>An earlier revision was substantially weaker.</strong> Its
+          erasure circuit checked that a prover-supplied buffer equalled a constant
+          and nothing else, so a prover who had never seen the key, the ciphertext,
+          or the VDF output could produce a passing proof. That is disclosed, not
+          buried: the result here is reducing an unbounded gap to one stated
+          assumption, which is not the same as closing it.
+        </li>
+      </ul>
+    </div>
+
+    <div class="grid g2" style="margin-top:26px">
+      <div class="card">
+        <h3>The strongest objection</h3>
+        <p>
+          If ground control can sign a revocation, why build a cryptographic
+          deadline? Because the two fail differently: revocation fails open when
+          the channel is gone, expiry fails closed. CHRONOS is a complement to
+          revocation, not a replacement — but only one of them leaves evidence a
+          third party can check afterwards.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Read the full argument</h3>
+        <p>
+          <a href="https://github.com/ChronosResearch/project-chronos/blob/main/SAFETY_CASE.md">SAFETY_CASE.md</a>
+          sets out why this is worth building and what it does not do.
+          <a href="https://github.com/ChronosResearch/project-chronos/blob/main/AUDIT.md">AUDIT.md</a>
+          lists every defect found in this codebase, including four critical ones
+          in our own prior revisions.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div>
+      <strong style="color:var(--ink)">Chronos Research</strong><br>
+      Open source under AGPL-3.0. Preprint submitted to the IACR Cryptology ePrint Archive.
+    </div>
+    <div style="text-align:right">
+      <a href="https://github.com/ChronosResearch/project-chronos">Repository</a> ·
+      <a href="https://github.com/ChronosResearch/project-chronos/blob/main/SAFETY_CASE.md">Safety case</a> ·
+      <a href="https://github.com/ChronosResearch/project-chronos/blob/main/AUDIT.md">Audit log</a> ·
+      <a href="https://orcid.org/0009-0001-7379-955X">ORCID</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
