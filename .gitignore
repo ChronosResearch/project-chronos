@@ -76,6 +76,8 @@ gh.zip
 *.pdf
 
 # ── Generated / temporary docs ────────────────────────────────────────────────
+# NOTE: `docs/` is deliberately NOT ignored. It holds the GitHub Pages site
+# (docs/index.html), which is published content, not build output.
 CHRONOS_PAPER_v2.pdf
 CHRONOS_PAPER_v2.html
 resume.html
@@ -153,8 +155,11 @@ pyproject.toml
 requirements.txt
 release-please-config.json
 docker-compose.yml
-index.html
-.nojekyll
+# Root-anchored. Unanchored, `index.html` and `.nojekyll` match at any depth and
+# silently excluded `docs/index.html` and `docs/.nojekyll` — the GitHub Pages
+# site — which is the same failure mode documented for `/tests/` above.
+/index.html
+/.nojekyll
 .pre-commit-config.yaml
 .release-please-manifest.json
 package.json
@@ -214,3 +219,13 @@ operator.key
 # `*.aux`, `*.log`, `*.out`, `*.toc` and `*.pdf` are already ignored above, so
 # only the `.tex` would need tracking.
 /paper/
+
+# ── Personal documents, never commit ──────────────────────────────────────────
+# Resume sources and build output live here temporarily while being drafted.
+# This is a public repository; nothing in `resume/` belongs in it.
+/resume/
+
+# ── Benchmark output ──────────────────────────────────────────────────────────
+# Written by run-benchmarks.bat / scripts\collect_benchmarks.ps1. Timestamped
+# result sets are local evidence for the paper, not repository content.
+/benchmark-results/

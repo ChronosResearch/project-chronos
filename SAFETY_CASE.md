@@ -70,6 +70,14 @@ That second property is, as far as we are aware, novel. A single record covers b
 what the agent destroyed and how it behaved. An agent that ran a mission but never
 erased cannot produce the proof at all.
 
+The nearest existing work is **certified deletion** (Bartusek–Khurana and the
+quantum-deletion line), which produces a certificate that a *ciphertext* was
+destroyed, under quantum assumptions. The difference is what the certificate
+covers: certified deletion attests to the fate of data, while the argument here
+binds classical key erasure to a capability-monitor trace, so one artifact speaks
+to both what was destroyed and how the agent behaved while it held the key. We
+claim the composition is new, not the idea of attestable deletion.
+
 ## Scope, honestly
 
 **This is a verification primitive, not an alignment technique.** It does not make
@@ -91,9 +99,10 @@ it is fixable by a standard multi-party ceremony — engineering, not research.
 **No argument in a circuit can establish that memory was freed.** A SNARK
 constrains values, not memory locations, so the prover supplies the post-wipe
 buffer and could retain a copy elsewhere. The residual assumption is exactly
-`F_OS` — memory locking, no swap, no core dumps, volatile overwrite — and nothing
-beyond it. Discharging it requires binding a hardware attestation into the proof's
-public inputs, which we have not implemented.
+`F_OS` — the assumption that the operating system honours memory locking, keeps
+the pages out of swap, suppresses core dumps, and that the volatile overwrite is
+not elided — and nothing beyond it. Discharging it requires binding a hardware
+attestation into the proof's public inputs, which we have not implemented.
 
 Earlier revisions of this work had a much larger gap here: the circuit checked that
 a prover-supplied buffer equalled a constant and nothing else, so a prover who had
@@ -118,11 +127,33 @@ can check afterwards.
 ## Status
 
 The prototype implements all four properties with a measured artifact: 8,267 real
-R1CS constraints, 128-byte proofs verifying in 1 ms, containment axioms checked
-over 1,728 abstract states at startup, and an end-to-end test crossing the
-provisioner/agent boundary with real sequential squarings. FHE inference works but
-only at toy scale, which is the largest gap between the prototype and a deployable
-system.
+R1CS constraints, 128-byte proofs verifying in 1 ms, and an end-to-end test
+crossing the provisioner/agent boundary with real sequential squarings. The
+containment axioms are checked at startup by exhaustive enumeration over the
+*abstraction* — 1,728 states, the product of the finite capability, budget and
+lifecycle domains — not over the concrete state space, which is unbounded.
+
+FHE inference is the largest gap between the prototype and a deployable system.
+Measured on an 8-core Intel Core 5 210H, cost per homomorphic multiplication is
+essentially flat as the network grows, at roughly two seconds:
+
+| Network | Multiplications | Inference | Per multiplication |
+|---------|-----------------|-----------|--------------------|
+| 8→4→2   | 40              | 79.0 s    | 1975 ms            |
+| 16→8→10 | 208             | 383.9 s   | 1846 ms            |
+| 32→8→10 | 336             | 696.9 s   | 2074 ms            |
+
+All three shapes were verified against a plaintext reference. Flat per-operation
+cost means the ceiling is the constant, not the scaling: `FheInt64` carries 64
+bits where the worst-case magnitude needs about 23, so a narrower ciphertext type
+is the obvious next optimisation.
+
+**Check this yourself.** The end-to-end protocol runs in one command and ends with
+a verifier accepting a proof it can check without trusting the agent:
+
+```
+pwsh scripts/demo.ps1 -T 500000        # or: bash scripts/demo.sh --t 500000
+```
 
 See [README.md](README.md) for the full status and gaps tables, and
 [AUDIT.md](AUDIT.md) for every defect found in this codebase, including four
