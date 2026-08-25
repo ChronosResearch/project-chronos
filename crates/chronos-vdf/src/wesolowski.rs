@@ -65,7 +65,7 @@ impl WesolowskiVdf {
     }
 
     /// `(a · b) mod m`, computed through `u128` so the product cannot overflow.
-    #[inline]
+    #[inline(always)]
     fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
         ((u128::from(a) * u128::from(b)) % u128::from(m)) as u64
     }

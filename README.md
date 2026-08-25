@@ -4,7 +4,7 @@
 
 **Paper:** [CHRONOS v4: Compositional Architecture for Ephemeral FHE Agents with Proof-Carrying Containment](https://zenodo.org/records/21534311)
 
-**Language:** Rust · **Curve:** BN254 (Groth16) / BLS12-381 (drand) · **License:** AGPL-3.0
+**Language:** Rust · **Curve:** BN254 (Groth16) / BLS12-381 (drand) · **License:** Apache-2.0
 
 ---
 
@@ -327,4 +327,4 @@ The suite includes an end-to-end lifecycle test (`crates/chronos-snark/tests/lif
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE).
