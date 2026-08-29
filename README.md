@@ -1,4 +1,4 @@
-# CHRONOS
+# CHRONOS Prototype
 
 **A cryptographic dead man's switch for AI agents.** An agent's key is released only by sequential work, its behaviour is bounded by a machine-checked capability monitor, and both its key destruction and its conduct are attested in a single 128-byte proof anyone can verify. No trusted hardware.
 
