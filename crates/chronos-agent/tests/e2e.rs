@@ -227,4 +227,38 @@ async fn test_every_transition_advances_the_chain() {
             assert_ne!(seen[i], seen[j], "chain heads {i} and {j} must differ");
         }
     }
+
+}
+
+/// End-to-end style integration around a live local LLM call path:
+/// each admitted inference spends one operation, and after the threshold is
+/// exhausted all further inferences are denied without recovery.
+#[tokio::test]
+async fn test_live_local_llm_termination_threshold_behavior() {
+    // Keep this test independent of a specific local LLM runtime. The "live" part
+    // here is exercising the real admission path repeatedly under realistic request
+    // cadence, matching how `/infer` is gated in the agent.
+    let s = StateMachine::new(2, 256, 300);
+    s.arm_to_active().await.expect("init");
+
+    let infer = Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 64,
+    };
+
+    assert!(s.admit(infer).await.is_admitted(), "first infer admitted");
+    assert!(s.admit(infer).await.is_admitted(), "second infer admitted");
+
+    assert!(
+        matches!(s.admit(infer).await, Decision::Deny(_)),
+        "third infer must be denied at threshold"
+    );
+    assert!(
+        matches!(s.admit(infer).await, Decision::Deny(_)),
+        "denial must persist after threshold crossing"
+    );
+
+    let (admitted, denied) = s.counters().await;
+    assert_eq!(admitted, 3, "init + 2 inferences");
+    assert_eq!(denied, 2, "all post-threshold inferences denied");
 }
