@@ -2,7 +2,8 @@
 
 We need help scaling CHRONOS. If you are an engineer who wants to work on deterministic AI safety, applied cryptography (FHE/SNARKs), and high-performance Rust, you are in the right place.
 
-**We don't do hand-holding.** If you want to contribute, follow these steps exactly.
+**We are thrilled to have you here!** If you want to contribute, please follow these setup steps. If you get stuck or need any help at all, don't hesitate to open an issue or reach out!
+
 
 ## 1. Quickstart (Local Setup)
 
