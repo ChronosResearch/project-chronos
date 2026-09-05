@@ -20,6 +20,7 @@ rand                  = { workspace = true }
 sha2                  = { workspace = true }
 serde                 = { workspace = true }
 serde_json            = { workspace = true }
+hex                   = "0.4"
 
 [dev-dependencies]
 # The lifecycle integration test performs real sequential squarings, because the
