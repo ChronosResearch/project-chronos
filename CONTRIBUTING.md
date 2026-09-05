@@ -4,6 +4,7 @@ We need help scaling CHRONOS. If you are an engineer who wants to work on determ
 
 **We are thrilled to have you here!** If you want to contribute, please follow these setup steps. If you get stuck or need any help at all, don't hesitate to open an issue or reach out!
 
+
 ## 1. Quickstart (Local Setup)
 
 You need the nightly Rust toolchain. We use `#![feature(portable_simd)]` for crypto acceleration.
@@ -30,9 +31,9 @@ Check the GitHub Issues tab for the `good first issue` label. Right now, our hig
 ## 3. Pull Request Standards
 
 If you submit a PR, it must meet these standards or it will be closed:
-1. **Tests Pass:** Run `cargo test` and `cargo fmt`.
+1. **Tests Pass:** Run `cargo fmt --all --check` and `cargo test --all-features`.
 2. **Docs:** Any new cryptographic primitive must include inline comments explaining the math.
 3. **Benchmarks:** If you are optimizing something (like the FHE layer), you must include the `cargo bench` output in the PR description proving it is faster.
 
-## Ready? 
+## Ready?
 Fork the repo, pick an issue, and submit a PR. We review daily.
