@@ -94,7 +94,7 @@ The residual assumption is therefore exactly this, and nothing beyond it:
 
 > **`F_OS`** — memory-locked pages are excluded from swap; core dumps are disabled; and a volatile triple-pass overwrite leaves no recoverable copy in the process address space.
 
-**The trusted setup is single-party.** Whoever runs it holds the trapdoor and can forge proofs that verify, on-chain included. The setup transcript is hash-chained, tamper-evident and publishable, and contributions can be collected from separate machines — but it combines *seeds*, so the party running the final step can reconstruct the trapdoor. That is not phase-2 ceremony security. Do not describe verification here as trust-free until a [BGM17](https://eprint.iacr.org/2017/1050) ceremony replaces it.
+**The trusted setup is now multi-party.** As of v5, CHRONOS includes a full Powers-of-Tau ceremony (BGM17) with proof of knowledge, pairing verification, and coordinator tooling. The setup is secure if ≥1 participant is honest (generates uniform τ, destroys it after contributing). See [`CEREMONY.md`](CEREMONY.md) for participation guide and [`docs/CEREMONY_DEPLOYMENT.md`](docs/CEREMONY_DEPLOYMENT.md) for deployment instructions. Previous single-party setup remains available for development use.
 
 ## Quick start
 

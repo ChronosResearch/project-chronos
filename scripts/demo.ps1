@@ -61,14 +61,14 @@ function Write-Step([string]$Text) {
 }
 
 function Write-Detail([string]$Text) { Write-Host "    $Text" -ForegroundColor Gray }
-function Write-Good([string]$Text)   { Write-Host "    OK  $Text" -ForegroundColor Green }
-function Write-Bad([string]$Text)    { Write-Host "    !!  $Text" -ForegroundColor Red }
+function Write-Good([string]$Text) { Write-Host "    OK  $Text" -ForegroundColor Green }
+function Write-Bad([string]$Text) { Write-Host "    !!  $Text" -ForegroundColor Red }
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$DemoDir  = Join-Path $RepoRoot 'demo-run'
-$Base     = "http://127.0.0.1:$Port"
+$DemoDir = Join-Path $RepoRoot 'demo-run'
+$Base = "http://127.0.0.1:$Port"
 
 $AgentProcess = $null
 
@@ -100,7 +100,7 @@ function Invoke-Chronos {
         UseBasicParsing = $true
     }
     if ($Body) {
-        $params['Body']        = $Body
+        $params['Body'] = $Body
         $params['ContentType'] = 'application/octet-stream'
     }
 
@@ -124,7 +124,9 @@ try {
     # ── 0. Build ─────────────────────────────────────────────────────────────
     Write-Step 'Building release binaries'
     Write-Detail 'first run compiles the dependency tree; subsequent runs are fast'
-    & cargo build --release -p chronos-provision -p chronos-agent 2>&1 | Out-Null
+    $oldError = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & cargo build --release -p chronos-provision -p chronos-agent -q 2>&1 | Out-Null
+    $ErrorActionPreference = $oldError
     if ($LASTEXITCODE -ne 0) { throw 'cargo build failed - run it directly to see the error' }
     Write-Good 'chronos-provision and chronos-agent built'
 
@@ -174,10 +176,9 @@ enabled = false
     Write-Detail 'seals a fresh key under PoseidonKDF(y, salt), then destroys'
     Write-Detail 'phi(N) and wipes the key from memory'
 
-    $provision = Join-Path $RepoRoot 'target\release\chronos-provision.exe'
-    & $provision --mission-id 'chronos-demo-001' --t-vdf-steps $T --t-seconds 300 `
+    & cargo run --release -q -p chronos-provision -- --mission-id 'chronos-demo-001' --t-vdf-steps $T --t-seconds 300 `
                  --op-budget 16 --disclosure-budget-bits 1024 --out-dir $DemoDir 2>&1 |
-        ForEach-Object { Write-Detail $_ }
+    ForEach-Object { Write-Detail $_ }
     if ($LASTEXITCODE -ne 0) { throw 'provisioning failed' }
 
     $missionJson = Get-Content (Join-Path $DemoDir 'mission_public.json') -Raw | ConvertFrom-Json
@@ -254,7 +255,7 @@ enabled = false
 
     # ── 5. Containment after erasure ─────────────────────────────────────────
     Write-Step 'Confirming inference is refused after erasure'
-    $infer = Invoke-Chronos -Method POST -Path '/infer' -Body ([byte[]](1,2,3,4))
+    $infer = Invoke-Chronos -Method POST -Path '/infer' -Body ([byte[]](1, 2, 3, 4))
     if ($infer.Status -eq 403) {
         Write-Good "refused with HTTP 403 - $($infer.Content)"
         Write-Detail 'the capability was revoked by the containment monitor, not by an ad-hoc check'
@@ -281,9 +282,9 @@ enabled = false
     Write-Host ''
     Write-Detail 'the first four match mission_public.json exactly:'
     $matched = ($attestation.public_inputs[0] -eq $missionJson.y_commit) -and
-               ($attestation.public_inputs[1] -eq $missionJson.ct_commit) -and
-               ($attestation.public_inputs[2] -eq $missionJson.sk_commit) -and
-               ($attestation.public_inputs[3] -eq $missionJson.mission_commit)
+    ($attestation.public_inputs[1] -eq $missionJson.ct_commit) -and
+    ($attestation.public_inputs[2] -eq $missionJson.sk_commit) -and
+    ($attestation.public_inputs[3] -eq $missionJson.mission_commit)
     if ($matched) {
         Write-Good 'commitments match - the agent proved against inputs it did not choose'
     }
@@ -351,7 +352,7 @@ catch {
         Write-Host ''
         Write-Detail 'agent stderr (last 40 lines):'
         Get-Content (Join-Path $DemoDir 'agent.stderr.log') -Tail 40 |
-            ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+        ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
     }
     exit 1
 }

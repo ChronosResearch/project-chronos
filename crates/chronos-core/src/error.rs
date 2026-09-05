@@ -47,6 +47,10 @@ pub enum ChronosError {
     /// Memory erasure proof failed verification.
     #[error("Erasure error: {0}")]
     Erasure(String),
+
+    /// Multi-party ceremony error (contribution verification, sequencing).
+    #[error("Ceremony error: {0}")]
+    Ceremony(String),
 }
 
 /// Convenience alias for library `Result` types.
