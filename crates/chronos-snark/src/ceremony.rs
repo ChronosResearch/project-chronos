@@ -221,9 +221,9 @@ impl Phase1Contribution {
         challenge: &Phase1Parameters,
         contributor: impl Into<String>,
     ) -> ChronosResult<Self> {
-        if challenge.tau_powers_g1.is_empty() || challenge.tau_powers_g2.is_empty() {
+        if challenge.tau_powers_g1.len() < 2 || challenge.tau_powers_g2.len() < 2 {
             return Err(ChronosError::Ceremony(
-                "phase 1 challenge is empty — cannot contribute".into(),
+                "phase 1 challenge must have at least 2 powers".into(),
             ));
         }
         if challenge.tau_powers_g1.len() != challenge.tau_powers_g2.len() {
@@ -266,7 +266,7 @@ impl Phase1Contribution {
         // We prove knowledge of τ such that new_g1[1] = old_g1[1]^τ.
         // (Checking all powers would cost O(n) pairings; one suffices for soundness.)
         let r = Fr::rand(&mut rng);
-        let commit_g1 = challenge.tau_powers_g1[0].mul(r).into_affine();
+        let commit_g1 = challenge.tau_powers_g1[1].mul(r).into_affine();
 
         let c = Self::proof_challenge(&commit_g1, &new_parameters);
         let response = r + c * tau;
@@ -309,7 +309,7 @@ impl Phase1Contribution {
         // Prover sent: commit = [r]₁, response = r + c⋅τ.
         // Check: [response]₁ = commit + c⋅new_g1[1].
         let c = Self::proof_challenge(&self.proof.commit_g1, &self.new_parameters);
-        let lhs = previous.tau_powers_g1[0].mul(self.proof.response);
+        let lhs = previous.tau_powers_g1[1].mul(self.proof.response);
         let rhs = self.proof.commit_g1.into_group() + self.new_parameters.tau_powers_g1[1].mul(c);
         if lhs != rhs {
             return Err(ChronosError::Ceremony(
@@ -751,7 +751,8 @@ mod tests {
     #[test]
     fn test_phase1_verification_detects_wrong_parent() {
         let challenge1 = Phase1Parameters::init(8);
-        let challenge2 = Phase1Parameters::init(8);
+        let mut challenge2 = Phase1Parameters::init(8);
+        challenge2.contribution_index = 1;
         let mut contrib = Phase1Contribution::contribute(&challenge1, "alice").expect("contribute");
         // Point the contribution at a different parent.
         contrib.parent_challenge = challenge2.challenge_hash();
@@ -882,7 +883,8 @@ mod tests {
         let p1 = Phase1Parameters::init(8);
         let c1 = Phase1Contribution::contribute(&p1, "alice").expect("contribute");
         let p2a = Phase2Parameters::init(c1.new_parameters.clone());
-        let p2b = Phase2Parameters::init(c1.new_parameters);
+        let mut p2b = Phase2Parameters::init(c1.new_parameters);
+        p2b.contribution_index = 1;
         
         let mut contrib = Phase2Contribution::contribute(&p2a, "bob").expect("contribute");
         contrib.parent_challenge = p2b.challenge_hash();
