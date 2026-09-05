@@ -201,11 +201,11 @@ enabled = false
     Write-Detail 'verifies containment axioms A1-A5 over 1,728 abstract states,'
     Write-Detail 'then refuses to start if any is violated'
 
-    $agentArgs = @('run', '--release', '-q', '-p', 'chronos-agent')
+    $agentExe = Join-Path $RepoRoot 'target\release\chronos-agent.exe'
     $stdout   = Join-Path $DemoDir 'agent.stdout.log'
     $stderr   = Join-Path $DemoDir 'agent.stderr.log'
 
-    $script:AgentProcess = Start-Process -FilePath 'cargo' -ArgumentList $agentArgs -WorkingDirectory $DemoDir `
+    $script:AgentProcess = Start-Process -FilePath $agentExe -WorkingDirectory $DemoDir `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
         -PassThru -WindowStyle Hidden
 
