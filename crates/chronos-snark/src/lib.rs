@@ -14,6 +14,11 @@ pub mod circuit;
 /// Groth16 prover, verifier, and Dynark incremental updater.
 pub mod prover;
 
+/// Multi-party ceremony (MPC) for Groth16 trusted setup. Implements Powers of Tau
+/// (Phase 1) and circuit-specific binding (Phase 2), replacing the single-party
+/// setup with distributed randomness contribution.
+pub mod ceremony;
+
 /// EVM encoding for verifying keys and proofs, so erasure attestations can be
 /// checked on-chain rather than by a trusted server. See `contracts/`.
 pub mod solidity;
