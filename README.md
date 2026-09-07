@@ -166,8 +166,8 @@ contracts/             Groth16 verifier + attestation registry (Solidity)
 | Component | Choice | Why |
 |---|---|---|
 | Proof system | Groth16 / BN254 | 128-byte constant-size proofs; matches EVM `alt_bn128` precompiles |
-| Hash / commitments | Poseidon-128, `t=3`, `alpha=5`, 8+57 rounds | ~300 constraints per permutation vs ~25,000 for SHA-256 |
-| Key sealing | **Chronos-AEAD** (Poseidon encrypt-then-MAC) | makes in-circuit authenticated decryption ~2k constraints instead of ~60k for AES-GCM |
+| Hash / commitments | Poseidon-128, `t=3`, `alpha=5`, 8+57 rounds (`ark-crypto-primitives` reference impl, not custom) | ~300 constraints per permutation vs ~25,000 for SHA-256 |
+| Key sealing | **Chronos-AEAD** — custom encrypt-then-MAC built on standard Poseidon; **not externally audited** | makes in-circuit authenticated decryption ~2k constraints instead of ~60k for AES-GCM |
 | VDF | Wesolowski over RSA-2048 | single-element proof, `O(log T)` verification |
 | Beacon | drand `quicknet` (BLS12-381) | public, unpredictable salt; verified offline against a real mainnet beacon |
 | PQ identity | ML-DSA (Dilithium3, FIPS 204) | EUF-CMA under Module-LWE |
@@ -296,6 +296,7 @@ Ordered by how much each limits the security claim.
 | mTLS not enforced | Requests are authenticated but not confidential | wire rustls to the axum acceptor |
 | Shared fallback modulus | All deployments without `certN.bin` share one group | use `chronos-provision` to generate a per-mission modulus |
 | Contracts uncompiled | Nothing deployed; no `solc`/`forge` in CI | add a Foundry job |
+| Chronos-AEAD unaudited | Custom encrypt-then-MAC over standard Poseidon-128; no third-party cryptanalysis | commission an external review or replace with an established AEAD (e.g. `xoodyak`) |
 | No post-quantum VDF | Sequentiality rests on factoring | class-group VDF — unknown order by construction from a public discriminant. See [chiavdf](https://github.com/Chia-Network/chiavdf) |
 
 ## Build and test
