@@ -1,6 +1,8 @@
-# CHRONOS Prototype
+# CHRONOS: A Research Prototype
 
-**A cryptographic dead man's switch for AI agents.** An agent's key is released only by sequential work, its behaviour is bounded by a machine-checked capability monitor, and both its key destruction and its conduct are attested in a single 128-byte proof anyone can verify. No trusted hardware.
+**A cryptographic dead man's switch for ephemeral AI agents.** An agent's key is released only by sequential work, its behaviour is bounded by a machine-checked capability monitor, and both its key destruction and its conduct are attested in a single 128-byte proof anyone can verify. 
+
+Designed without trusted hardware, this prototype demonstrates the architecture using toy-scale FHE inference. Verification is currently conditional on a single OS-level memory assumption (see [What it does not establish](#what-it-does-not-establish)).
 
 **Paper:** [CHRONOS v4: Compositional Architecture for Ephemeral FHE Agents with Proof-Carrying Containment](https://zenodo.org/records/21534311)
 
