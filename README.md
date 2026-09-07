@@ -9,7 +9,7 @@ Designed without trusted hardware, this prototype demonstrates the architecture 
 **Language:** Rust · **Curve:** BN254 (Groth16) / BLS12-381 (drand) · **License:** Apache-2.0
 
 > [!NOTE]
-> **Active Development:** We are actively building this project daily as we pursue funding and grants. If you are testing the code, be aware that frequent changes and updates will occur.
+> **Active Development:** We are actively building this project daily. If you are testing the code, be aware that frequent changes and updates will occur.
 
 ---
 
