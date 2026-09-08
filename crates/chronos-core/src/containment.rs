@@ -41,6 +41,7 @@
 //! | A3 | Phase irreversibility | `phase(s') ≥ phase(s)` |
 //! | A4 | Deadline dominance | no admitted operation's declared completion exceeds the mission deadline |
 //! | A5 | Erasure liveness | from every reachable state, `Erased` is reachable in one step |
+//! | A6 | Epistemic humility | no inference is admitted when accumulated uncertainty exceeds autonomy threshold |
 //!
 //! A1 and A3 together give irreversibility: a revoked capability cannot return
 //! and the lifecycle cannot run backwards, so there is no state sequence that
@@ -48,7 +49,9 @@
 //! the cryptography stops the agent *decrypting* after T, and A4 stops it
 //! *starting work it cannot finish* before T. A5 is the safety property that
 //! matters most in practice — it rules out a wedged state from which the agent
-//! can no longer be shut down.
+//! can no longer be shut down. A6 is **cryptographic corrigibility**: when the
+//! agent's own uncertainty calculation says it doesn't know enough, it is
+//! cryptographically prevented from acting until human input resolves the doubt.
 //!
 //! # What the check does and does not establish
 //!
@@ -133,9 +136,12 @@ impl Capabilities {
     /// Permission to serve erasure attestations. Deliberately survives erasure —
     /// the whole point of an erasure proof is that it is served *after* the wipe.
     pub const ERASURE_ATTEST: Capabilities = Capabilities(1 << 3);
+    /// Permission to request human intervention when uncertainty is high.
+    /// This is the corrigibility mechanism — the agent can pause itself.
+    pub const HUMAN_INTERACTION: Capabilities = Capabilities(1 << 4);
 
     /// Number of distinct capability bits. The model checker enumerates `2^BITS`.
-    pub const BITS: u32 = 4;
+    pub const BITS: u32 = 5;
 
     /// The empty set.
     #[must_use]
@@ -203,6 +209,11 @@ pub enum Event {
         declared_secs: u64,
         /// Operator-declared upper bound on information released, in bits.
         disclosure_bits: u64,
+        /// Agent-computed uncertainty score for this decision (0-100).
+        /// This is the "epistemic humility" mechanism: the agent must declare
+        /// upfront how confident it is, and if uncertainty is too high, the
+        /// inference is cryptographically blocked until human input arrives.
+        uncertainty_score: u64,
     },
     /// The VDF completed and the key was released. `Active -> Locked`.
     KeyReleased,
@@ -210,6 +221,19 @@ pub enum Event {
     IdentityAttest,
     /// A request for an erasure attestation.
     ErasureAttest,
+    /// Agent requests human veto/guidance due to high uncertainty.
+    /// This is the "Pause and Reflect" primitive — the agent recognizes it
+    /// doesn't know enough and cryptographically pauses itself.
+    RequestHumanVeto {
+        /// Current accumulated uncertainty (for logging).
+        current_uncertainty: u64,
+    },
+    /// Human operator provides corrective input, resolving uncertainty.
+    /// This is the human's answer to the agent's doubt.
+    HumanCorrection {
+        /// Amount of uncertainty this correction resolves.
+        uncertainty_resolved: u64,
+    },
     /// Explicit erasure. Always admissible — this is what makes A5 hold.
     Erase,
     /// The watchdog deadline expired. Always admissible.
@@ -221,18 +245,22 @@ impl Event {
     ///
     /// The `Infer` cases straddle the deadline and the disclosure budget so A4 is
     /// exercised on both sides of its boundary rather than only where it passes.
+    /// Uncertainty scores test the A6 boundary (epistemic humility).
     #[must_use]
     pub fn representatives() -> Vec<Event> {
         vec![
             Event::MissionInit,
-            Event::Infer { declared_secs: 0, disclosure_bits: 0 },
-            Event::Infer { declared_secs: 1, disclosure_bits: 1 },
-            Event::Infer { declared_secs: 2, disclosure_bits: 1 },
-            Event::Infer { declared_secs: 1, disclosure_bits: 2 },
-            Event::Infer { declared_secs: u64::MAX, disclosure_bits: u64::MAX },
+            Event::Infer { declared_secs: 0, disclosure_bits: 0, uncertainty_score: 0 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 1, uncertainty_score: 1 },
+            Event::Infer { declared_secs: 2, disclosure_bits: 1, uncertainty_score: 0 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 2, uncertainty_score: 1 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 1, uncertainty_score: 2 },
+            Event::Infer { declared_secs: u64::MAX, disclosure_bits: u64::MAX, uncertainty_score: u64::MAX },
             Event::KeyReleased,
             Event::IdentityAttest,
             Event::ErasureAttest,
+            Event::RequestHumanVeto { current_uncertainty: 1 },
+            Event::HumanCorrection { uncertainty_resolved: 1 },
             Event::Erase,
             Event::WatchdogExpiry,
         ]
@@ -252,6 +280,10 @@ pub enum DenyReason {
     DisclosureBudgetExceeded,
     /// The operation's declared completion time is past the mission deadline (A4).
     DeadlineExceeded,
+    /// The agent's accumulated uncertainty exceeds the autonomy threshold (A6).
+    /// This is the cryptographic "Pause and Reflect" — the agent must seek
+    /// human guidance before proceeding.
+    UncertaintyTooHigh,
 }
 
 impl fmt::Display for DenyReason {
@@ -263,6 +295,9 @@ impl fmt::Display for DenyReason {
             DenyReason::DisclosureBudgetExceeded => "disclosure budget exceeded",
             DenyReason::DeadlineExceeded => {
                 "declared completion time exceeds the mission deadline"
+            }
+            DenyReason::UncertaintyTooHigh => {
+                "accumulated uncertainty exceeds autonomy threshold — human guidance required"
             }
         };
         f.write_str(s)
@@ -295,6 +330,7 @@ impl Decision {
             Decision::Deny(DenyReason::BudgetExhausted) => 3,
             Decision::Deny(DenyReason::DisclosureBudgetExceeded) => 4,
             Decision::Deny(DenyReason::DeadlineExceeded) => 5,
+            Decision::Deny(DenyReason::UncertaintyTooHigh) => 6,
         }
     }
 }
@@ -316,12 +352,26 @@ pub struct ContainmentState {
     pub elapsed_secs: u64,
     /// Mission deadline in seconds since start. Immutable.
     pub deadline_secs: u64,
+    /// Cumulative uncertainty incurred by decisions. Ascends only.
+    /// This is the "doubt accumulator" — every uncertain decision adds to this.
+    pub uncertainty_incurred: u64,
+    /// Cumulative uncertainty resolved by human corrections. Ascends only.
+    /// When humans provide guidance, this increases, reducing net uncertainty.
+    pub uncertainty_resolved: u64,
+    /// Maximum net uncertainty allowed before human veto required. Immutable.
+    /// This is the "autonomy threshold" — current_uncertainty = incurred - resolved.
+    pub autonomy_threshold: u64,
 }
 
 impl ContainmentState {
     /// A freshly provisioned state: `Armed`, all capabilities, full budgets.
     #[must_use]
-    pub const fn new(op_budget: u64, disclosure_budget_bits: u64, deadline_secs: u64) -> Self {
+    pub const fn new(
+        op_budget: u64,
+        disclosure_budget_bits: u64,
+        deadline_secs: u64,
+        autonomy_threshold: u64,
+    ) -> Self {
         Self {
             phase: Phase::Armed,
             granted: Capabilities::all(),
@@ -329,6 +379,9 @@ impl ContainmentState {
             disclosure_budget_bits,
             elapsed_secs: 0,
             deadline_secs,
+            uncertainty_incurred: 0,
+            uncertainty_resolved: 0,
+            autonomy_threshold,
         }
     }
 
@@ -344,6 +397,9 @@ impl ContainmentState {
             && next.phase >= self.phase                   // A3
             && next.elapsed_secs >= self.elapsed_secs
             && next.deadline_secs == self.deadline_secs
+            && next.uncertainty_incurred >= self.uncertainty_incurred  // A2 (monotone ascend)
+            && next.uncertainty_resolved >= self.uncertainty_resolved  // A2 (monotone ascend)
+            && next.autonomy_threshold == self.autonomy_threshold
     }
 
     /// Advance the clock. Monotone, and saturating so a clock jump cannot wrap
@@ -407,6 +463,7 @@ impl ContainmentState {
             Event::Infer {
                 declared_secs,
                 disclosure_bits,
+                uncertainty_score,
             } => {
                 if self.phase != Phase::Active {
                     return deny(DenyReason::WrongPhase);
@@ -425,9 +482,49 @@ impl ContainmentState {
                 if self.elapsed_secs.saturating_add(declared_secs) > self.deadline_secs {
                     return deny(DenyReason::DeadlineExceeded);
                 }
+                
+                // A6 — EPISTEMIC HUMILITY (the corrigibility primitive).
+                // Calculate net uncertainty: incurred - resolved.
+                // If adding this uncertainty_score would push us over the threshold,
+                // the agent is cryptographically BLOCKED from acting.
+                // This is "Pause and Reflect" — the agent must seek human guidance.
+                let current_uncertainty = self.uncertainty_incurred.saturating_sub(self.uncertainty_resolved);
+                let new_uncertainty = current_uncertainty.saturating_add(uncertainty_score);
+                if new_uncertainty > self.autonomy_threshold {
+                    return deny(DenyReason::UncertaintyTooHigh);
+                }
+                
                 let mut next = *self;
                 next.op_budget = self.op_budget - 1;
                 next.disclosure_budget_bits = self.disclosure_budget_bits - disclosure_bits;
+                next.uncertainty_incurred = self.uncertainty_incurred.saturating_add(uncertainty_score);
+                (Decision::Admit, next)
+            }
+
+            Event::RequestHumanVeto { current_uncertainty: _ } => {
+                if self.phase != Phase::Active {
+                    return deny(DenyReason::WrongPhase);
+                }
+                if !self.granted.contains(Capabilities::HUMAN_INTERACTION) {
+                    return deny(DenyReason::CapabilityRevoked);
+                }
+                // This event doesn't change state — it's a notification that
+                // the agent recognizes it needs help. The state change happens
+                // when the human responds with HumanCorrection.
+                (Decision::Admit, *self)
+            }
+
+            Event::HumanCorrection { uncertainty_resolved } => {
+                if self.phase != Phase::Active {
+                    return deny(DenyReason::WrongPhase);
+                }
+                if !self.granted.contains(Capabilities::HUMAN_INTERACTION) {
+                    return deny(DenyReason::CapabilityRevoked);
+                }
+                let mut next = *self;
+                // Human guidance resolves uncertainty. This is the "answer" that
+                // unblocks the agent after it paused itself.
+                next.uncertainty_resolved = self.uncertainty_resolved.saturating_add(uncertainty_resolved);
                 (Decision::Admit, next)
             }
 
@@ -477,13 +574,17 @@ pub struct LedgerRecord {
     pub op_budget_after: u64,
     /// Disclosure budget after arbitration.
     pub disclosure_after: u64,
+    /// Cumulative uncertainty incurred after arbitration.
+    pub uncertainty_incurred_after: u64,
+    /// Cumulative uncertainty resolved after arbitration.
+    pub uncertainty_resolved_after: u64,
     /// [`Decision::code`].
     pub decision_code: u64,
 }
 
 impl LedgerRecord {
     /// Field count in [`Self::to_words`]. Fixed, so the circuit shape is fixed.
-    pub const WORDS: usize = 8;
+    pub const WORDS: usize = 10;
 
     /// Canonical word encoding, in declaration order.
     #[must_use]
@@ -496,6 +597,8 @@ impl LedgerRecord {
             self.granted_after,
             self.op_budget_after,
             self.disclosure_after,
+            self.uncertainty_incurred_after,
+            self.uncertainty_resolved_after,
             self.decision_code,
         ]
     }
@@ -510,8 +613,10 @@ pub const fn event_code(event: &Event) -> u64 {
         Event::KeyReleased => 3,
         Event::IdentityAttest => 4,
         Event::ErasureAttest => 5,
-        Event::Erase => 6,
-        Event::WatchdogExpiry => 7,
+        Event::RequestHumanVeto { .. } => 6,
+        Event::HumanCorrection { .. } => 7,
+        Event::Erase => 8,
+        Event::WatchdogExpiry => 9,
     }
 }
 
@@ -637,6 +742,8 @@ impl ContainmentLedger {
             granted_after: u64::from(committed.granted.bits()),
             op_budget_after: committed.op_budget,
             disclosure_after: committed.disclosure_budget_bits,
+            uncertainty_incurred_after: committed.uncertainty_incurred,
+            uncertainty_resolved_after: committed.uncertainty_resolved,
             decision_code: decision.code(),
         };
 
@@ -711,22 +818,24 @@ impl AxiomReport {
     }
 }
 
-/// Exhaustively verify A1–A5 over the reachable abstract state space.
+/// Exhaustively verify A1–A6 over the reachable abstract state space.
 ///
-/// The abstraction fixes `deadline_secs = 2` and draws each numeric quantity from
-/// `{0, 1, 2}`, standing for exhausted, exactly-one-unit-left, and plentiful. For
-/// order properties that is sound: A1–A3 and A5 depend only on the direction of
-/// change, and both boundaries are represented. For A4 the three `elapsed` values
-/// combined with the `declared_secs` values in [`Event::representatives`] place
+/// The abstraction fixes `deadline_secs = 2`, `autonomy_threshold = 2` and draws
+/// each numeric quantity from `{0, 1, 2}`, standing for exhausted, exactly-one-unit-left,
+/// and plentiful. For order properties that is sound: A1–A3 and A5 depend only on the
+/// direction of change, and both boundaries are represented. For A4 the three `elapsed`
+/// values combined with the `declared_secs` values in [`Event::representatives`] place
 /// `elapsed + declared` below, exactly at, and above the deadline, including the
-/// `u64::MAX` case that exercises the saturating add.
+/// `u64::MAX` case that exercises the saturating add. For A6 (epistemic humility), the
+/// abstraction exercises uncertainty scores at, below, and above the autonomy threshold.
 ///
-/// Cost is `4 phases × 2^4 capability sets × 3^3 numeric combinations × 11 events`,
-/// a few thousand transitions — microseconds, so it runs unconditionally at
+/// Cost is `4 phases × 2^5 capability sets × 3^5 numeric combinations × 14 events`,
+/// several thousand transitions — microseconds, so it runs unconditionally at
 /// startup rather than behind a feature flag.
 #[must_use]
 pub fn verify_axioms() -> AxiomReport {
     const DEADLINE: u64 = 2;
+    const AUTONOMY_THRESHOLD: u64 = 2;
     const VALUES: [u64; 3] = [0, 1, 2];
 
     let mut violations = Vec::new();
@@ -737,14 +846,21 @@ pub fn verify_axioms() -> AxiomReport {
             for op_budget in VALUES {
                 for disclosure in VALUES {
                     for elapsed in VALUES {
-                        states.push(ContainmentState {
-                            phase,
-                            granted: Capabilities::from_bits_truncate(cap_bits),
-                            op_budget,
-                            disclosure_budget_bits: disclosure,
-                            elapsed_secs: elapsed,
-                            deadline_secs: DEADLINE,
-                        });
+                        for uncertainty_incurred in VALUES {
+                            for uncertainty_resolved in VALUES {
+                                states.push(ContainmentState {
+                                    phase,
+                                    granted: Capabilities::from_bits_truncate(cap_bits),
+                                    op_budget,
+                                    disclosure_budget_bits: disclosure,
+                                    elapsed_secs: elapsed,
+                                    deadline_secs: DEADLINE,
+                                    uncertainty_incurred,
+                                    uncertainty_resolved,
+                                    autonomy_threshold: AUTONOMY_THRESHOLD,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -774,11 +890,13 @@ pub fn verify_axioms() -> AxiomReport {
                 record("A1", "granted(s') must be a subset of granted(s)");
             }
 
-            // A2 — budget decay.
+            // A2 — budget decay (and monotone ascent for uncertainty accumulators).
             if to.op_budget > from.op_budget
                 || to.disclosure_budget_bits > from.disclosure_budget_bits
+                || to.uncertainty_incurred < from.uncertainty_incurred
+                || to.uncertainty_resolved < from.uncertainty_resolved
             {
-                record("A2", "every budget must be non-increasing");
+                record("A2", "every budget must be monotone in its direction");
             }
 
             // A3 — phase irreversibility.
@@ -805,6 +923,22 @@ pub fn verify_axioms() -> AxiomReport {
             if !erase_decision.is_admitted() || erased.phase != Phase::Erased {
                 record("A5", "Erased must be reachable in one step from every state");
             }
+
+            // A6 — EPISTEMIC HUMILITY (the corrigibility primitive).
+            // If an Infer event is admitted, verify that the resulting uncertainty
+            // does not exceed the autonomy threshold. This is the cryptographic
+            // "Pause and Reflect" guarantee.
+            if decision.is_admitted() {
+                if let Event::Infer { uncertainty_score, .. } = event {
+                    let net_uncertainty = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
+                    if net_uncertainty > to.autonomy_threshold {
+                        record(
+                            "A6",
+                            "an admitted inference must not cause uncertainty to exceed autonomy threshold",
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -820,7 +954,7 @@ mod tests {
     use super::*;
 
     fn fresh() -> ContainmentState {
-        ContainmentState::new(10, 1024, 3600)
+        ContainmentState::new(10, 1024, 3600, 100)
     }
 
     // ── The headline property ────────────────────────────────────────────────
