@@ -159,8 +159,16 @@ library Pairing {
 ///         serve a re-run trusted setup. `chronos-snark`'s `solidity.rs`
 ///         generates the constructor arguments, see `export_verifying_key`.
 contract Groth16Verifier {
-    using Pairing for Pairing.G1Point;
-    using Pairing for Pairing.G2Point;
+    // NOTE: two `using Pairing for ...` directives were removed here. Both were
+    // dead: every call in this contract is written out as `Pairing.addition(...)`,
+    // `Pairing.scalarMul(...)` or `Pairing.negate(...)`, so neither directive ever
+    // resolved a call. The G2Point one could not have, because no function in
+    // `Pairing` takes a `G2Point` as its first argument, which is what Forge's
+    // `incorrect-using-for` lint reported.
+    //
+    // Explicit qualification is kept deliberately. In pairing code it matters
+    // which point group an operation acts on, and `Pairing.addition(vkX, ...)`
+    // says that where `vkX.addition(...)` would leave it to the reader.
 
     /// @dev BN254 scalar field order. Public inputs must be strictly less than
     ///      this, otherwise the proof is trivially malleable.
