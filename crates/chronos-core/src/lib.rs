@@ -1,6 +1,9 @@
 /// Axiomatic Containment Monitor: containment expressed as order-theoretic
 /// invariants over a lattice-valued state, verified exhaustively at startup.
 pub mod containment;
+/// Operator correction grants: unforgeable, single-use authorisations that let the
+/// agent verify a human correction without being able to manufacture one.
+pub mod correction;
 pub mod error;
 pub mod fhe;
 pub mod memory;
@@ -13,6 +16,7 @@ pub use containment::{
     AxiomReport, Capabilities, ContainmentLedger, ContainmentState, Decision, DenyReason, Event,
     Phase,
 };
+pub use correction::{CorrectionGrant, CHAIN_END};
 pub use error::{ChronosError, ChronosResult};
 
 use num_bigint::BigUint;

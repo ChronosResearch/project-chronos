@@ -1213,7 +1213,10 @@ mod tests {
         let ct = ChronosAead::encrypt(&k, Fr::from(9u64), &poseidon::split32(&sk))
             .expect("encrypt");
         
-        let mut ledger = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut ledger = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         ledger.admit(Event::MissionInit);
         ledger.admit(Event::KeyReleased);
         ledger.admit(Event::Erase);

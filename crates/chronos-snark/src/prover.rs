@@ -490,7 +490,10 @@ mod tests {
     use chronos_core::containment::{ContainmentLedger, ContainmentState, Event};
 
     fn terminal_ledger() -> ContainmentLedger {
-        let mut l = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut l = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         l.admit(Event::MissionInit);
         l.admit(Event::KeyReleased);
         l.admit(Event::Erase);
@@ -608,9 +611,16 @@ mod tests {
         let proof = p.prove_erasure(&w).expect("proving");
 
         // A different history that still terminates correctly.
-        let mut other = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut other = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         other.admit(Event::MissionInit);
-        other.admit(Event::Infer { declared_secs: 1, disclosure_bits: 4 });
+        other.admit(Event::Infer { 
+            declared_secs: 1, 
+            disclosure_bits: 4,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         other.admit(Event::KeyReleased);
         other.admit(Event::Erase);
         let other_summary = ContainmentSummary::from_ledger(&other);
@@ -632,7 +642,10 @@ mod tests {
         let p = prover();
         let mut w = witness();
 
-        let mut still_active = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut still_active = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         still_active.admit(Event::MissionInit);
         w.containment = ContainmentSummary::from_ledger(&still_active);
 

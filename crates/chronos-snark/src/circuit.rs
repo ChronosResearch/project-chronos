@@ -76,6 +76,7 @@ use ark_ff::Zero;
 use ark_r1cs_std::alloc::AllocVar;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
+use core::cmp::Ordering;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use chronos_core::containment::{Capabilities, ContainmentLedger, Phase};
 use chronos_core::{ChronosError, ChronosResult};
@@ -133,9 +134,27 @@ pub const PUBLIC_INPUT_COUNT: usize = 5;
 ///
 /// Instead the circuit binds this fixed-size summary, whose `chain_head` field is
 /// the SHA-256 head of the complete append-only ledger. The proof therefore
-/// commits to the entire event history transitively, while the four terminal-state
+/// commits to the entire event history transitively, while the terminal-state
 /// fields are checked *directly in-circuit* against the values a properly erased
 /// agent must have.
+///
+/// # A6 (epistemic humility) fields
+///
+/// The last three fields carry the uncertainty trajectory. `uncertainty_incurred`
+/// and `uncertainty_resolved` are the terminal values of the two monotone
+/// accumulators; `autonomy_threshold` is the provisioner-fixed bound. The circuit
+/// enforces `incurred <= resolved + threshold`, which is the terminal form of A6.
+///
+/// **What that does and does not establish.** A6 holds *per admitted inference* at
+/// runtime, and every per-step value is bound transitively through `chain_head`,
+/// so the trajectory is tamper-evident. The in-circuit check is the weaker
+/// *terminal* predicate: it rules out a run that ends over threshold, but a run
+/// that admitted an over-threshold inference and later received enough
+/// `HumanCorrection` to come back under would still satisfy it. Re-deriving the
+/// per-step check in-circuit would require folding the whole variable-length
+/// ledger, which the fixed circuit shape forbids. Separately, none of this speaks
+/// to whether the reported `uncertainty_score` was honest — see
+/// `F_HONEST-UNCERTAINTY` in `CORRIGIBILITY.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContainmentSummary {
     /// Terminal phase discriminant. Must be [`Phase::Erased`].
@@ -156,11 +175,23 @@ pub struct ContainmentSummary {
     pub chain_head_lo: Fr,
     /// High 16 bytes of the ledger's SHA-256 chain head.
     pub chain_head_hi: Fr,
+    /// A6: terminal cumulative self-reported uncertainty incurred.
+    pub uncertainty_incurred: u64,
+    /// A6: terminal cumulative uncertainty resolved by human correction.
+    pub uncertainty_resolved: u64,
+    /// A6: the provisioner-fixed autonomy threshold.
+    pub autonomy_threshold: u64,
+    /// A7: how many operator correction grants the run consumed.
+    ///
+    /// Bound so a verifier can compare it against the number of grants the
+    /// provisioner issued. An agent claiming a large `uncertainty_resolved` while
+    /// consuming zero grants is contradicted by its own attestation.
+    pub corrections_consumed: u64,
 }
 
 impl ContainmentSummary {
     /// Field elements in the canonical encoding.
-    pub const ELEMS: usize = 9;
+    pub const ELEMS: usize = 13;
 
     /// The capability bits a correctly erased agent must retain: erasure
     /// attestation only. Every other capability must have been revoked.
@@ -186,6 +217,10 @@ impl ContainmentSummary {
             ledger_len: ledger.len(),
             chain_head_lo: lo,
             chain_head_hi: hi,
+            uncertainty_incurred: state.uncertainty_incurred,
+            uncertainty_resolved: state.uncertainty_resolved,
+            autonomy_threshold: state.autonomy_threshold,
+            corrections_consumed: state.corrections_consumed,
         }
     }
 
@@ -205,6 +240,10 @@ impl ContainmentSummary {
             Fr::from(self.ledger_len),
             self.chain_head_lo,
             self.chain_head_hi,
+            Fr::from(self.uncertainty_incurred),
+            Fr::from(self.uncertainty_resolved),
+            Fr::from(self.autonomy_threshold),
+            Fr::from(self.corrections_consumed),
         ]
     }
 
@@ -214,17 +253,39 @@ impl ContainmentSummary {
         poseidon::hash(Domain::ContainmentLedger, &self.to_elements())
     }
 
-    /// Whether this summary describes a properly terminated containment run.
+    /// A6 terminal predicate: `incurred <= resolved + threshold`.
     ///
-    /// Checked natively so provisioning and tooling can reject a bad summary
-    /// early; the same four predicates are enforced in-circuit, which is what
-    /// makes them load-bearing.
+    /// Stated as an addition on the right rather than a subtraction on the left so
+    /// that the native check and the in-circuit check agree exactly. A field
+    /// element has no saturating subtraction, so `incurred - resolved` would wrap
+    /// to a huge value whenever corrections over-resolve, and the in-circuit
+    /// comparison would spuriously fail. `saturating_add` here mirrors the
+    /// field arithmetic, which cannot overflow for `u64` inputs.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub fn satisfies_a6(&self) -> bool {
+        self.uncertainty_incurred
+            <= self
+                .uncertainty_resolved
+                .saturating_add(self.autonomy_threshold)
+    }
+
+    /// The four constant terminal predicates: erased, fully revoked, budgets zero.
+    #[must_use]
+    pub fn satisfies_terminal_state(&self) -> bool {
         self.final_phase == Phase::Erased as u64
             && self.final_granted == Self::expected_final_granted()
             && self.op_budget_remaining == 0
             && self.disclosure_remaining == 0
+    }
+
+    /// Whether this summary describes a properly terminated containment run.
+    ///
+    /// Checked natively so provisioning and tooling can reject a bad summary
+    /// early; the same five predicates are enforced in-circuit, which is what
+    /// makes them load-bearing.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.satisfies_terminal_state() && self.satisfies_a6()
     }
 }
 
@@ -351,7 +412,7 @@ impl ErasureWitness {
                 self.m_post[bad]
             )));
         }
-        if !self.containment.is_terminal() {
+        if !self.containment.satisfies_terminal_state() {
             return Err(ChronosError::Snark(format!(
                 "erasure witness: containment summary is not terminal \
                  (phase={}, granted={}, op_budget={}, disclosure={}) — \
@@ -361,6 +422,18 @@ impl ErasureWitness {
                 self.containment.final_granted,
                 self.containment.op_budget_remaining,
                 self.containment.disclosure_remaining
+            )));
+        }
+        if !self.containment.satisfies_a6() {
+            return Err(ChronosError::Snark(format!(
+                "erasure witness: containment summary is not terminal — A6 \
+                 (epistemic humility) violated: uncertainty_incurred={} exceeds \
+                 uncertainty_resolved={} + autonomy_threshold={}. The run admitted \
+                 inference while self-reported uncertainty was over threshold \
+                 without an accompanying human correction",
+                self.containment.uncertainty_incurred,
+                self.containment.uncertainty_resolved,
+                self.containment.autonomy_threshold
             )));
         }
         // The relation the circuit will enforce. Checking it here converts a
@@ -561,6 +634,23 @@ impl ConstraintSynthesizer<Fr> for ErasureCircuit {
         summary[2].enforce_equal(&FpVar::Constant(Fr::zero()))?;
         summary[3].enforce_equal(&FpVar::Constant(Fr::zero()))?;
 
+        // ── 7b. A6, epistemic humility: incurred <= resolved + threshold ─────
+        //
+        // Slots 9, 10 and 11 are `uncertainty_incurred`, `uncertainty_resolved`
+        // and `autonomy_threshold`. Written as an addition on the right because
+        // the field has no saturating subtraction: `incurred - resolved` would
+        // wrap to an enormous element whenever corrections over-resolve, and the
+        // comparison would fail on a run that is actually compliant. Both sides
+        // are sums of `u64` values, so they stay far below `(p-1)/2` and the
+        // checked comparison is sound.
+        //
+        // This is the *terminal* form of A6. The per-step guarantee is enforced
+        // by the monitor at admission time and bound transitively through the
+        // chain head in slots 7 and 8; it is not re-derived here, because folding
+        // a variable-length ledger is incompatible with a fixed circuit shape.
+        let a6_bound = &summary[10] + &summary[11];
+        summary[9].enforce_cmp(&a6_bound, Ordering::Less, true)?;
+
         // ── 8. The observed buffer reads the wipe pattern ────────────────────
         //
         // Carries no soundness weight — see the module docs — but forces the
@@ -584,11 +674,15 @@ mod tests {
     /// Build a terminal ledger the way a real mission would: init, one inference,
     /// key release, erase.
     fn terminal_ledger() -> ContainmentLedger {
-        let mut l = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut l = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         l.admit(Event::MissionInit);
         l.admit(Event::Infer {
             declared_secs: 1,
             disclosure_bits: 8,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
         });
         l.admit(Event::KeyReleased);
         l.admit(Event::Erase);
@@ -764,7 +858,10 @@ mod tests {
     /// A mission that never erased must not be able to produce an erasure proof.
     #[test]
     fn test_rejects_non_terminal_containment() {
-        let mut l = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut l = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         l.admit(Event::MissionInit); // Active, not Erased
         let mut w = good_witness();
         w.containment = ContainmentSummary::from_ledger(&l);
@@ -799,11 +896,17 @@ mod tests {
         let mut disc_bad = base.clone();
         disc_bad.containment.disclosure_remaining = 1;
 
+        // A6: incurred exceeds resolved + threshold.
+        let mut a6_bad = base.clone();
+        a6_bad.containment.uncertainty_incurred =
+            base.containment.uncertainty_resolved + base.containment.autonomy_threshold + 1;
+
         for (name, w) in [
             ("final_phase", phase_bad),
             ("final_granted", granted_bad),
             ("op_budget_remaining", op_bad),
             ("disclosure_remaining", disc_bad),
+            ("a6_uncertainty_over_threshold", a6_bad),
         ] {
             assert!(
                 !w.containment.is_terminal(),
@@ -837,7 +940,10 @@ mod tests {
         let base = ContainmentSummary::from_ledger(&terminal_ledger());
 
         // Same terminal state, shorter history.
-        let mut other = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut other = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         other.admit(Event::MissionInit);
         other.admit(Event::Erase);
         let other_summary = ContainmentSummary::from_ledger(&other);
@@ -893,6 +999,146 @@ mod tests {
         let mut v = base;
         v.op_budget_remaining += 1;
         assert_ne!(d, v.commitment(), "op budget must be bound");
+
+        // A6 fields. Without these the agent could misreport its uncertainty
+        // trajectory or claim a threshold the provisioner never authorised.
+        let mut v = base;
+        v.uncertainty_incurred += 1;
+        assert_ne!(d, v.commitment(), "uncertainty_incurred must be bound");
+
+        let mut v = base;
+        v.uncertainty_resolved += 1;
+        assert_ne!(d, v.commitment(), "uncertainty_resolved must be bound");
+
+        let mut v = base;
+        v.autonomy_threshold += 1;
+        assert_ne!(d, v.commitment(), "autonomy_threshold must be bound");
+
+        // A7. Without this an agent could claim a large `uncertainty_resolved`
+        // while never having consumed an operator grant.
+        let mut v = base;
+        v.corrections_consumed += 1;
+        assert_ne!(d, v.commitment(), "corrections_consumed must be bound");
+    }
+
+    // ── A6: proof-carrying epistemic humility ───────────────────────────────
+
+    /// A run whose self-reported uncertainty ended above the committed threshold
+    /// must be unprovable. This is the terminal form of A6, enforced in-circuit.
+    #[test]
+    fn test_rejects_uncertainty_over_threshold() {
+        let mut w = good_witness();
+        w.containment.autonomy_threshold = 10;
+        w.containment.uncertainty_resolved = 0;
+        w.containment.uncertainty_incurred = 11; // 11 > 0 + 10
+
+        assert!(
+            !w.containment.satisfies_a6(),
+            "the native A6 predicate must reject an over-threshold run"
+        );
+        assert!(
+            w.containment.satisfies_terminal_state(),
+            "only A6 should be failing, so the failure is unambiguous"
+        );
+        let err = w.check_shape().expect_err("must be refused before proving");
+        assert!(
+            format!("{err}").contains("A6"),
+            "the error must name A6, got: {err}"
+        );
+
+        let cs = synthesize(w);
+        assert!(
+            !cs.is_satisfied().expect("satisfiability"),
+            "an over-threshold run must make the circuit unsatisfiable"
+        );
+    }
+
+    /// Exactly at the threshold is compliant — the bound is inclusive, matching
+    /// the monitor's `new_uncertainty > threshold` denial test.
+    #[test]
+    fn test_a6_boundary_is_inclusive_in_circuit() {
+        let mut w = good_witness();
+        w.containment.autonomy_threshold = 10;
+        w.containment.uncertainty_resolved = 5;
+        w.containment.uncertainty_incurred = 15; // 15 == 5 + 10
+
+        assert!(w.containment.satisfies_a6());
+        assert!(w.containment.is_terminal());
+        let cs = synthesize(w);
+        assert!(
+            cs.is_satisfied().expect("satisfiability"),
+            "a run exactly at the threshold must remain provable"
+        );
+    }
+
+    /// Human corrections that over-resolve must not wrap the in-circuit
+    /// comparison. `incurred - resolved` would be a huge field element here; the
+    /// constraint is written as `incurred <= resolved + threshold` precisely so
+    /// this case stays satisfiable.
+    #[test]
+    fn test_a6_over_resolution_does_not_wrap() {
+        let mut w = good_witness();
+        w.containment.autonomy_threshold = 10;
+        w.containment.uncertainty_incurred = 3;
+        w.containment.uncertainty_resolved = 50; // resolved > incurred
+
+        assert!(w.containment.satisfies_a6());
+        let cs = synthesize(w);
+        assert!(
+            cs.is_satisfied().expect("satisfiability"),
+            "over-resolution must not wrap the field comparison"
+        );
+    }
+
+    /// The A6 fields must survive a real mission history, not just hand-built
+    /// summaries: an agent that incurred uncertainty and was corrected should
+    /// still produce a terminal, provable summary.
+    #[test]
+    fn test_a6_trajectory_from_real_ledger_is_terminal() {
+        // A real operator chain, so the correction below is authorised (A7).
+        let (anchor, grants) = chronos_core::correction::build_chain(&[([0x07u8; 32], 50)]);
+        let mut l = ContainmentLedger::new(
+            ContainmentState::new(4, 64, 3600, 100, anchor),
+            16,
+        );
+        l.admit(Event::MissionInit);
+        l.admit(Event::Infer {
+            declared_secs: 1,
+            disclosure_bits: 8,
+            uncertainty_score: 90,
+        });
+        // Over threshold now: this must be denied.
+        let denied = l.admit(Event::Infer {
+            declared_secs: 1,
+            disclosure_bits: 8,
+            uncertainty_score: 20,
+        });
+        assert!(!denied.is_admitted(), "90 + 20 > 100 must be denied");
+        // Human resolves, then the same inference becomes admissible.
+        assert!(l
+            .admit(Event::HumanCorrection { grant: grants[0] })
+            .is_admitted());
+        assert!(l
+            .admit(Event::Infer {
+                declared_secs: 1,
+                disclosure_bits: 8,
+                uncertainty_score: 20,
+            })
+            .is_admitted());
+        l.admit(Event::KeyReleased);
+        l.admit(Event::Erase);
+
+        let s = ContainmentSummary::from_ledger(&l);
+        assert_eq!(s.uncertainty_incurred, 110);
+        assert_eq!(s.uncertainty_resolved, 50);
+        assert_eq!(s.autonomy_threshold, 100);
+        assert!(s.satisfies_a6(), "110 <= 50 + 100");
+        assert!(s.is_terminal());
+
+        let mut w = good_witness();
+        w.containment = s;
+        let cs = synthesize(w);
+        assert!(cs.is_satisfied().expect("satisfiability"));
     }
 
     // ── Public input hygiene ────────────────────────────────────────────────

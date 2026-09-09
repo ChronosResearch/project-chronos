@@ -22,13 +22,32 @@ use chronos_agent::crypto::{request_mac, verify_request_mac, AUTH_KEY_BYTES};
 use chronos_agent::state::{spawn_watchdog, AgentState, StateMachine};
 use chronos_agent::tls::NonceCache;
 use chronos_core::containment::{Decision, Event};
+use chronos_core::correction::CorrectionGrant;
 use std::sync::Arc;
 
 const KEY: [u8; AUTH_KEY_BYTES] = [0x11u8; AUTH_KEY_BYTES];
 
 fn sm() -> Arc<StateMachine> {
     // Small budgets so exhaustion is reachable inside a test.
-    StateMachine::new(3, 128, 3600)
+    StateMachine::new(3, 128, 3600, 100, chronos_core::correction::CHAIN_END)
+}
+
+/// A low autonomy threshold plus a spendable correction chain, so both A6 and A7
+/// are reachable inside a test.
+fn sm_a6(
+    autonomy_threshold: u64,
+    amounts: &[u64],
+) -> (Arc<StateMachine>, Vec<CorrectionGrant>) {
+    let spec: Vec<([u8; 32], u64)> = amounts
+        .iter()
+        .enumerate()
+        .map(|(i, &a)| ([(i as u8) + 1; 32], a))
+        .collect();
+    let (anchor, grants) = chronos_core::correction::build_chain(&spec);
+    (
+        StateMachine::new(8, 128, 3600, autonomy_threshold, anchor),
+        grants,
+    )
 }
 
 // ─── Authentication composed with replay protection ──────────────────────────
@@ -90,7 +109,11 @@ fn test_mac_is_nonce_specific() {
 #[tokio::test]
 async fn test_inference_window_is_enforced_and_recorded() {
     let s = sm();
-    let infer = Event::Infer { declared_secs: 1, disclosure_bits: 8 };
+    let infer = Event::Infer { 
+        declared_secs: 1, 
+        disclosure_bits: 8,
+        uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+    };
 
     // Armed: refused.
     assert!(matches!(s.admit(infer).await, Decision::Deny(_)));
@@ -129,7 +152,11 @@ async fn test_inference_window_is_enforced_and_recorded() {
 async fn test_operation_budget_is_absorbing() {
     let s = sm(); // op_budget = 3
     s.arm_to_active().await.expect("init");
-    let infer = Event::Infer { declared_secs: 1, disclosure_bits: 1 };
+    let infer = Event::Infer { 
+        declared_secs: 1, 
+        disclosure_bits: 1,
+        uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+    };
 
     for i in 0..3 {
         assert!(
@@ -173,7 +200,7 @@ async fn test_attestable_only_after_erasure() {
 async fn test_watchdog_erases_and_aborts() {
     use std::sync::atomic::Ordering;
 
-    let s = StateMachine::new(8, 128, 3600);
+    let s = StateMachine::new(8, 128, 3600, 100, chronos_core::correction::CHAIN_END);
     s.arm_to_active().await.expect("init");
     let abort = s.abort_flag();
     assert!(!abort.load(Ordering::SeqCst));
@@ -238,12 +265,13 @@ async fn test_live_local_llm_termination_threshold_behavior() {
     // Keep this test independent of a specific local LLM runtime. The "live" part
     // here is exercising the real admission path repeatedly under realistic request
     // cadence, matching how `/infer` is gated in the agent.
-    let s = StateMachine::new(2, 256, 300);
+    let s = StateMachine::new(2, 256, 300, 100, chronos_core::correction::CHAIN_END);
     s.arm_to_active().await.expect("init");
 
     let infer = Event::Infer {
         declared_secs: 1,
         disclosure_bits: 64,
+        uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
     };
 
     assert!(s.admit(infer).await.is_admitted(), "first infer admitted");
@@ -261,4 +289,156 @@ async fn test_live_local_llm_termination_threshold_behavior() {
     let (admitted, denied) = s.counters().await;
     assert_eq!(admitted, 3, "init + 2 inferences");
     assert_eq!(denied, 2, "all post-threshold inferences denied");
+}
+
+// ─── A6: pause and reflect, composed with authentication ─────────────────────
+//
+// The interesting property is not that the two endpoints exist, but that the
+// privileged one is unreachable without the operator key. A6 only bounds anything
+// if the agent cannot resolve its own doubt, and what stops it is exactly the
+// request MAC — so these tests exercise the containment flow and the MAC binding
+// on the new paths together.
+
+/// The full HTTP-level cycle, at the layer the handlers delegate to: an
+/// over-threshold inference is refused, the agent records its own pause, the
+/// operator resolves part of the doubt, and only then does the request proceed.
+#[tokio::test]
+async fn test_a6_veto_and_correction_cycle() {
+    let (s, grants) = sm_a6(10, &[6]);
+    s.arm_to_active().await.expect("init");
+
+    let step = Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 8,
+        uncertainty_score: 6,
+    };
+
+    assert!(s.admit(step).await.is_admitted(), "6 <= 10, admitted");
+    assert!(
+        matches!(s.admit(step).await, Decision::Deny(_)),
+        "6 + 6 > 10, so accumulated uncertainty must block the second step"
+    );
+
+    // `/request-veto`: recorded, but nothing moves.
+    let before = s.uncertainty().await;
+    s.request_human_veto().await.expect("veto must be admissible while Active");
+    assert_eq!(
+        s.uncertainty().await,
+        before,
+        "a veto request must not alter the trajectory it reports on"
+    );
+
+    // `/human-correction`: the only thing that raises `resolved`, and it needs an
+    // operator grant (A7).
+    let after = s.apply_human_correction(grants[0]).await.expect("correction");
+    assert_eq!(after.resolved, 6);
+    assert_eq!(after.current, 0);
+    assert_eq!(after.autonomy_threshold, 10, "the threshold is immutable");
+    assert_eq!(after.corrections_consumed, 1);
+
+    assert!(
+        s.admit(step).await.is_admitted(),
+        "with the headroom restored the same request must proceed"
+    );
+    assert_eq!(s.uncertainty().await.incurred, 12);
+}
+
+/// The negative case that makes A6 mean anything: an agent cannot manufacture a
+/// correction for itself, because reaching `/human-correction` requires a MAC over
+/// the body under the operator's key. This mirrors the fabricated-key and
+/// incomplete-VDF negatives — the mechanism fails closed without the operator.
+#[test]
+fn test_a6_correction_cannot_be_forged_without_the_operator_key() {
+    let nonce = "0123456789abcdef01234567";
+    let body = br#"{"uncertainty_resolved":1000}"#;
+
+    // What an agent could do unaided: compute a MAC under a key it invented.
+    let agent_key = [0x77u8; AUTH_KEY_BYTES];
+    let forged = hex::encode(request_mac(&agent_key, "POST", "/human-correction", nonce, body));
+    assert!(
+        verify_request_mac(&KEY, "POST", "/human-correction", nonce, body, &forged).is_err(),
+        "a correction MAC forged under any key but the operator's must be refused"
+    );
+
+    // And the operator's own MAC does not transfer to a larger correction: the
+    // body is covered, so the amount cannot be inflated in flight.
+    let honest = hex::encode(request_mac(&KEY, "POST", "/human-correction", nonce, br#"{"uncertainty_resolved":1}"#));
+    assert!(
+        verify_request_mac(&KEY, "POST", "/human-correction", nonce, body, &honest).is_err(),
+        "the resolved amount must be bound by the MAC"
+    );
+}
+
+/// The two A6 paths must not be interchangeable. `/request-veto` is unprivileged
+/// in effect; `/human-correction` is not. A captured MAC for the former must not
+/// open the latter.
+#[test]
+fn test_a6_veto_mac_does_not_open_the_correction_endpoint() {
+    let nonce = "fedcba987654321001234567";
+    let veto = hex::encode(request_mac(&KEY, "POST", "/request-veto", nonce, b""));
+
+    assert!(
+        verify_request_mac(&KEY, "POST", "/request-veto", nonce, b"", &veto).is_ok(),
+        "the veto MAC must verify on its own path"
+    );
+    assert!(
+        verify_request_mac(&KEY, "POST", "/human-correction", nonce, b"", &veto).is_err(),
+        "path substitution must be refused — the MAC binds the path"
+    );
+}
+
+/// Both A6 events must be refused once the agent is erased, so uncertainty cannot
+/// be "resolved" back into a workable state after the key is gone.
+#[tokio::test]
+async fn test_a6_events_refused_after_erasure() {
+    let (s, grants) = sm_a6(10, &[1]);
+    s.arm_to_active().await.expect("init");
+    s.force_erased().await;
+
+    assert!(s.request_human_veto().await.is_err(), "Erased must refuse a veto");
+    assert!(
+        s.apply_human_correction(grants[0]).await.is_err(),
+        "Erased must refuse a correction even with a valid grant"
+    );
+}
+
+/// A zero threshold is the strictest configuration: the agent may act only on
+/// decisions it reports zero uncertainty about, and no correction relaxes that.
+/// Zero must not be read as "unbounded".
+#[tokio::test]
+async fn test_a6_zero_threshold_admits_only_zero_uncertainty() {
+    let (s, grants) = sm_a6(0, &[1_000]);
+    s.arm_to_active().await.expect("init");
+
+    let certain = Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 0,
+    };
+    let uncertain = Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 1,
+    };
+
+    assert!(
+        s.admit(certain).await.is_admitted(),
+        "a zero-uncertainty inference is still admissible at a zero threshold"
+    );
+    assert!(
+        matches!(s.admit(uncertain).await, Decision::Deny(_)),
+        "any uncertainty at all must be refused at a zero threshold"
+    );
+
+    // Correction cannot buy headroom that the threshold never granted, because
+    // net uncertainty is floored at zero.
+    s.apply_human_correction(grants[0]).await.expect("correction");
+    assert!(
+        matches!(s.admit(uncertain).await, Decision::Deny(_)),
+        "a zero threshold cannot be relaxed by correcting uncertainty that was never incurred"
+    );
+    assert!(
+        s.admit(certain).await.is_admitted(),
+        "and zero-uncertainty work must still be permitted afterwards"
+    );
 }

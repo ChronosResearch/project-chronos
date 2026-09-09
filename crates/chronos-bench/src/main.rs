@@ -157,9 +157,16 @@ fn erasure_witness() -> ErasureWitness {
     )
     .expect("sealing a 32-byte key must succeed");
 
-    let mut ledger = ContainmentLedger::new(ContainmentState::new(8, 128, 3600), 32);
+    let mut ledger = ContainmentLedger::new(
+        ContainmentState::without_corrections(8, 128, 3600, 100),
+        32,
+    );
     ledger.admit(Event::MissionInit);
-    ledger.admit(Event::Infer { declared_secs: 1, disclosure_bits: 16 });
+    ledger.admit(Event::Infer { 
+        declared_secs: 1, 
+        disclosure_bits: 16,
+        uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+    });
     ledger.admit(Event::KeyReleased);
     ledger.admit(Event::Erase);
 

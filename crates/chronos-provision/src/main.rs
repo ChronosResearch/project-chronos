@@ -52,6 +52,7 @@
 
 use anyhow::{bail, Context, Result};
 use ark_bn254::Fr;
+use chronos_core::correction;
 use chronos_core::wipe::secure_wipe;
 use chronos_core::VdfEngine;
 use chronos_snark::aead::ChronosAead;
@@ -98,6 +99,29 @@ struct Args {
     /// Containment disclosure budget, in bits.
     #[arg(long, default_value_t = 65536)]
     disclosure_budget_bits: u64,
+
+    /// A6 autonomy threshold: the maximum net self-reported uncertainty
+    /// (`incurred - resolved`) under which the agent may admit an inference.
+    ///
+    /// Set by the provisioner rather than the agent, because a humility bound the
+    /// agent picks for itself is not a bound. Zero means every inference carrying
+    /// any uncertainty at all requires a human correction first.
+    #[arg(long, default_value_t = 100)]
+    autonomy_threshold: u64,
+
+    /// A7: how many operator correction grants to issue.
+    ///
+    /// Each grant lets the operator resolve `--correction-amount` of accumulated
+    /// uncertainty exactly once. The chain caps total resolvable uncertainty for
+    /// the whole mission, so this is the operator deciding in advance how much
+    /// doubt it is willing to absolve. Zero issues no grants, which means the agent
+    /// must halt permanently at the autonomy threshold.
+    #[arg(long, default_value_t = 8)]
+    correction_grants: u32,
+
+    /// A7: uncertainty each correction grant resolves.
+    #[arg(long, default_value_t = 25)]
+    correction_amount: u64,
 
     /// Load `N` from this file instead of generating it. Removes the `φ(N)`
     /// shortcut, so provisioning performs the full `T` squarings.
@@ -226,6 +250,17 @@ fn main() -> Result<()> {
     let sk_commit = poseidon::hash(Domain::SecretKey, &poseidon::split32(&sk));
     let mission_commit = poseidon::hash_bytes(Domain::MissionId, &mission_digest);
 
+    // A7 correction chain. The anchor is published; the grants are the operator's
+    // and must never reach the agent, because holding a grant is exactly the
+    // capability that lets a party resolve the agent's uncertainty.
+    let mut grant_spec: Vec<([u8; 32], u64)> = Vec::with_capacity(args.correction_grants as usize);
+    for _ in 0..args.correction_grants {
+        let mut token = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut token);
+        grant_spec.push((token, args.correction_amount));
+    }
+    let (correction_anchor, correction_grants) = correction::build_chain(&grant_spec);
+
     let artifact = MissionPublic::new(
         args.mission_id.clone(),
         args.t_vdf_steps,
@@ -236,6 +271,8 @@ fn main() -> Result<()> {
         mission_commit,
         args.op_budget,
         args.disclosure_budget_bits,
+        args.autonomy_threshold,
+        correction_anchor,
     );
 
     // ── 6. Write outputs ─────────────────────────────────────────────────────
@@ -243,13 +280,42 @@ fn main() -> Result<()> {
     let ct_path = out.join("ct_sk.bin");
     let cert_path = out.join("certN.bin");
     let salt_path = out.join("salt.bin");
+    let grants_path = out.join("correction_grants.json");
 
     artifact.save(&mission_path).map_err(|e| anyhow::anyhow!("{e}"))?;
     std::fs::write(&ct_path, ct.to_bytes()).context("writing ct_sk.bin")?;
     std::fs::write(&cert_path, n.to_bytes_be()).context("writing certN.bin")?;
     std::fs::write(&salt_path, &salt).context("writing salt.bin")?;
 
+    // The grants go to the *operator*, not the agent. Written as hex so they can be
+    // handed over out of band and fed to `/human-correction` one at a time.
+    let grants_json: Vec<serde_json::Value> = correction_grants
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            serde_json::json!({
+                "index": i,
+                "token": format!("0x{}", hex::encode(g.token)),
+                "amount": g.amount,
+                "next_anchor": format!("0x{}", hex::encode(g.next_anchor)),
+            })
+        })
+        .collect();
+    std::fs::write(
+        &grants_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mission_id": args.mission_id,
+            "anchor": format!("0x{}", hex::encode(correction_anchor)),
+            "note": "OPERATOR ONLY. Never give these to the agent; a grant is the \
+                     authority to resolve its uncertainty. Spend them in index order.",
+            "grants": grants_json,
+        }))
+        .context("serialising correction grants")?,
+    )
+    .context("writing correction_grants.json")?;
+
     restrict_permissions(&ct_path)?;
+    restrict_permissions(&grants_path)?;
 
     // ── 7. Destroy provisioner secrets ───────────────────────────────────────
     //
@@ -266,6 +332,10 @@ fn main() -> Result<()> {
     println!("  {}          <- agent only", ct_path.display());
     println!("  {}          <- public", cert_path.display());
     println!("  {}           <- agent only", salt_path.display());
+    println!(
+        "  {} <- OPERATOR ONLY, never give to the agent",
+        grants_path.display()
+    );
     println!();
     println!("sk wiped; phi(N) destroyed. The key is now recoverable only by");
     println!("completing {} sequential squarings.", args.t_vdf_steps);

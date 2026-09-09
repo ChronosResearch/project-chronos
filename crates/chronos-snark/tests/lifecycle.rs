@@ -29,7 +29,9 @@
 
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
-use chronos_core::containment::{ContainmentLedger, ContainmentState, Event, Phase};
+use chronos_core::containment::{
+    ContainmentLedger, ContainmentState, Decision, DenyReason, Event, Phase,
+};
 use chronos_core::mpc::MpcCertificate;
 use chronos_core::VdfEngine;
 use chronos_snark::aead::{ChronosAead, Ciphertext};
@@ -45,6 +47,17 @@ use num_bigint::BigUint;
 
 /// Sequential squarings. Small for test speed; see the module note.
 const T: u64 = 1_000;
+
+/// The mission's A7 correction chain: one grant resolving 6 units.
+///
+/// Built once and shared between provisioning and the containment run, mirroring
+/// deployment: the provisioner publishes the anchor, and the operator holds the
+/// grants. The agent sees only the anchor and cannot derive a grant from it.
+/// Deterministic, so provisioning and the containment run agree without sharing
+/// state.
+fn correction_chain() -> ([u8; 32], Vec<chronos_core::correction::CorrectionGrant>) {
+    chronos_core::correction::build_chain(&[([0x5Cu8; 32], 6)])
+}
 
 /// Left-pad to the circuit's fixed `y` width.
 fn to_fixed_be(v: &BigUint, len: usize) -> Vec<u8> {
@@ -106,6 +119,8 @@ fn provision(mission_id: &str) -> Provisioned {
         poseidon::hash_bytes(Domain::MissionId, &mission_digest),
         8,
         128,
+        10,
+        correction_chain().0,
     );
 
     Provisioned {
@@ -125,16 +140,52 @@ fn run_containment(artifact: &MissionPublic) -> ContainmentLedger {
             artifact.op_budget,
             artifact.disclosure_budget_bits,
             artifact.t_seconds,
+            artifact.autonomy_threshold,
+            artifact
+                .correction_anchor_bytes()
+                .expect("the artifact's anchor must decode"),
         ),
         64,
     );
     assert!(ledger.admit(Event::MissionInit).is_admitted());
+
+    // A6, exercised for real rather than with a zero score. Two inferences each
+    // declare more than half the artifact's threshold, so the second would cross
+    // it: the monitor refuses, the agent records its own pause, the operator
+    // resolves the accumulated doubt, and only then does the request go through.
+    // All five events land in the ledger, so the uncertainty trajectory the proof
+    // commits to is non-trivial rather than an all-zero placeholder.
+    let step = Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 16,
+        uncertainty_score: artifact.autonomy_threshold / 2 + 1,
+    };
+    assert!(
+        ledger.admit(step).is_admitted(),
+        "the first step must fit under the autonomy threshold"
+    );
+    assert_eq!(
+        ledger.admit(step),
+        Decision::Deny(DenyReason::UncertaintyTooHigh),
+        "the second step would cross the threshold, so A6 must refuse it"
+    );
     assert!(ledger
-        .admit(Event::Infer {
-            declared_secs: 1,
-            disclosure_bits: 16
+        .admit(Event::RequestHumanVeto {
+            current_uncertainty: ledger.state().uncertainty_incurred,
         })
         .is_admitted());
+    // A7: the correction must carry an operator grant. The agent cannot mint one,
+    // so this is the step it genuinely cannot perform alone.
+    assert!(ledger
+        .admit(Event::HumanCorrection {
+            grant: correction_chain().1[0],
+        })
+        .is_admitted());
+    assert!(
+        ledger.admit(step).is_admitted(),
+        "with the headroom restored the same request must be admitted"
+    );
+
     assert!(ledger.admit(Event::KeyReleased).is_admitted());
     assert!(ledger.admit(Event::Erase).is_admitted());
     assert_eq!(ledger.state().phase, Phase::Erased);
@@ -301,7 +352,8 @@ fn test_unerased_mission_cannot_be_proven() {
     let sk_bytes = poseidon::join32(&[opened[0], opened[1]]).expect("join");
 
     // Mission started, never erased.
-    let mut ledger = ContainmentLedger::new(ContainmentState::new(8, 128, 600), 64);
+    let mut ledger =
+        ContainmentLedger::new(ContainmentState::without_corrections(8, 128, 600, 100), 64);
     ledger.admit(Event::MissionInit);
 
     let witness = ErasureWitness {

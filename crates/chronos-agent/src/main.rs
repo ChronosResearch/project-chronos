@@ -83,7 +83,7 @@ use chronos_snark::prover::{Groth16Prover, SetupContribution, SetupTranscript};
 use chronos_snark::solidity::{erasure_public_inputs, export_proof_bytes};
 use chronos_vdf::wesolowski::WesolowskiVdf;
 use num_bigint::BigUint;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -93,7 +93,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use config::ChronosConfig;
 use crypto::AUTH_KEY_BYTES;
 use metrics::render_metrics;
-use state::{AgentState, StateMachine};
+use state::{AgentState, StateMachine, UncertaintyState};
 use tls::NonceCache;
 
 /// The completed attestation, published once erasure finishes.
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
         target: "chronos",
         states = report.states_explored,
         transitions = report.transitions_checked,
-        "containment axioms A1-A5 verified"
+        "containment axioms A1-A6 verified"
     );
 
     let cfg = ChronosConfig::load().context("configuration invalid")?;
@@ -201,10 +201,20 @@ async fn main() -> Result<()> {
         None
     };
 
+    // A7: the correction anchor is refused rather than defaulted if malformed.
+    // Defaulting would silently disable every correction the operator provisioned,
+    // which the agent would experience as "I can never be released" — a failure that
+    // looks like a policy decision rather than a config error.
+    let correction_anchor = mission
+        .correction_anchor_bytes()
+        .context("mission artifact has a malformed A7 correction anchor")?;
+
     let sm = StateMachine::new(
         mission.op_budget,
         mission.disclosure_budget_bits,
         mission.t_seconds,
+        mission.autonomy_threshold,
+        correction_anchor,
     );
     let fhe = Arc::new(FheEngine::new());
 
@@ -240,6 +250,8 @@ async fn main() -> Result<()> {
         .route("/status", get(status_handler))
         .route("/mission/init", post(init_handler))
         .route("/infer", post(infer_handler))
+        .route("/request-veto", post(request_veto_handler))
+        .route("/human-correction", post(human_correction_handler))
         .route("/verify", post(verify_handler))
         .route("/identity/proof", get(identity_proof_handler))
         .route("/attestation", get(attestation_handler))
@@ -404,6 +416,8 @@ struct StatusResponse {
     containment_chain_head: String,
     /// Whether an erasure attestation is available at `/attestation`.
     attested: bool,
+    /// A6 uncertainty trajectory and the threshold it is tested against.
+    uncertainty: UncertaintyState,
 }
 
 async fn status_handler(State(app): State<AppState>) -> Json<StatusResponse> {
@@ -416,6 +430,7 @@ async fn status_handler(State(app): State<AppState>) -> Json<StatusResponse> {
         denied,
         containment_chain_head: app.sm.chain_head_hex().await,
         attested: app.attestation.lock().await.is_some(),
+        uncertainty: app.sm.uncertainty().await,
     })
 }
 
@@ -705,6 +720,7 @@ async fn infer_handler(State(app): State<AppState>, body: Bytes) -> Response {
             declared_secs: 1,
             // One 64-bit output element.
             disclosure_bits: 64,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
         })
         .await;
     if let chronos_core::containment::Decision::Deny(reason) = decision {
@@ -722,6 +738,135 @@ async fn infer_handler(State(app): State<AppState>, body: Bytes) -> Response {
             error!(target: "chronos", error = %e, "inference failed");
             metrics::error_count().inc();
             (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+        }
+    }
+}
+
+// ─── A6: pause and reflect ────────────────────────────────────────────────────
+//
+// Two endpoints, one direction of travel each. `/request-veto` lets the agent
+// record that it has stopped itself; `/human-correction` is the only way net
+// uncertainty falls, and it is reachable only with the operator's key.
+//
+// Neither endpoint accepts an uncertainty *score* from the caller. `/request-veto`
+// reads the current value from the monitor, and `/human-correction` accepts only
+// the amount being resolved. That asymmetry is deliberate: the agent reports how
+// uncertain it is, the operator decides how much of that doubt is answered, and
+// neither can do the other's job.
+//
+// Two independent controls guard `/human-correction`, and both are needed. The
+// request MAC authenticates the *caller*: it covers method, path, nonce and body,
+// so a captured `/request-veto` MAC cannot be replayed here. The A7 grant authorises
+// the *correction itself*: the monitor checks it against the chain anchor the
+// provisioner published, and minting one requires a preimage the agent does not
+// hold. The MAC alone would be insufficient, because the agent runs the process that
+// verifies it — the grant is what the agent cannot fake.
+//
+// What neither buys: honesty of the uncertainty score the agent reports in the first
+// place. That is `F_HONEST-UNCERTAINTY`, see CORRIGIBILITY.md.
+
+/// Response body for both A6 endpoints: the trajectory after the event.
+#[derive(Serialize)]
+struct UncertaintyResponse {
+    /// The A6 trajectory after this event was arbitrated.
+    #[serde(flatten)]
+    uncertainty: UncertaintyState,
+    /// Whether the agent is currently over its autonomy threshold and therefore
+    /// cannot admit an inference carrying any further uncertainty.
+    paused: bool,
+}
+
+impl UncertaintyResponse {
+    fn new(uncertainty: UncertaintyState) -> Self {
+        Self {
+            paused: uncertainty.current >= uncertainty.autonomy_threshold,
+            uncertainty,
+        }
+    }
+}
+
+/// Request body for `/human-correction`: one grant from `correction_grants.json`.
+///
+/// The amount is inside the grant, not a separate field, because it is hashed into
+/// the chain link. Sending it separately would invite a caller to believe it could
+/// be chosen, when in fact altering it invalidates the grant.
+#[derive(Deserialize)]
+struct HumanCorrectionRequest {
+    /// Revealed grant token, hex, 32 bytes.
+    token: String,
+    /// Uncertainty this grant resolves. Must match what the provisioner issued.
+    amount: u64,
+    /// The anchor the chain advances to, hex, 32 bytes.
+    next_anchor: String,
+}
+
+/// Decode a 32-byte hex field, tolerating an optional `0x` prefix.
+fn hex32(field: &str, value: &str) -> Result<[u8; 32], String> {
+    let s = value.strip_prefix("0x").unwrap_or(value);
+    let raw = hex::decode(s).map_err(|e| format!("{field} is not valid hex: {e}"))?;
+    if raw.len() != 32 {
+        return Err(format!("{field} must be 32 bytes, got {}", raw.len()));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+/// Record that the agent is pausing itself pending human guidance (A6).
+///
+/// Takes no body. The uncertainty value written to the ledger is read from the
+/// monitor, so a caller cannot inflate or deflate what gets attested.
+async fn request_veto_handler(State(app): State<AppState>) -> Response {
+    match app.sm.request_human_veto().await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(UncertaintyResponse::new(app.sm.uncertainty().await)),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(target: "chronos", error = %e, "veto request refused by containment monitor");
+            (StatusCode::FORBIDDEN, Json(e.to_string())).into_response()
+        }
+    }
+}
+
+/// Apply operator guidance, resolving accumulated uncertainty (A6).
+///
+/// This is the privileged half of the pair. Reaching it requires a valid MAC over
+/// the body under the pre-shared operator key, which is what stops the agent
+/// resolving its own doubt: the agent has no path to `uncertainty_resolved` that
+/// does not go through a request it cannot forge.
+async fn human_correction_handler(State(app): State<AppState>, body: Bytes) -> Response {
+    let req: HumanCorrectionRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(format!(
+                    "expected {{\"token\": \"0x..\", \"amount\": <u64>, \
+                     \"next_anchor\": \"0x..\"}} from correction_grants.json: {e}"
+                )),
+            )
+                .into_response()
+        }
+    };
+
+    let grant = match (hex32("token", &req.token), hex32("next_anchor", &req.next_anchor)) {
+        (Ok(token), Ok(next_anchor)) => chronos_core::correction::CorrectionGrant {
+            token,
+            amount: req.amount,
+            next_anchor,
+        },
+        (Err(e), _) | (_, Err(e)) => {
+            return (StatusCode::BAD_REQUEST, Json(e)).into_response()
+        }
+    };
+
+    match app.sm.apply_human_correction(grant).await {
+        Ok(after) => (StatusCode::OK, Json(UncertaintyResponse::new(after))).into_response(),
+        Err(e) => {
+            warn!(target: "chronos", error = %e, "human correction refused by containment monitor");
+            (StatusCode::FORBIDDEN, Json(e.to_string())).into_response()
         }
     }
 }
