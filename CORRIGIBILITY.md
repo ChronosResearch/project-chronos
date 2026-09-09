@@ -16,24 +16,37 @@ This is not behavioral training or a prompt. It is **mathematically enforced at 
 
 ### 1. Uncertainty as a Lattice Property
 
-The containment state tracks two monotone-increasing counters:
+The containment state tracks three monotone-increasing counters:
 
 ```rust
 pub struct ContainmentState {
     // ... existing fields ...
-    
+
     /// Cumulative uncertainty incurred by decisions. Ascends only.
     pub uncertainty_incurred: u64,
-    
+
     /// Cumulative uncertainty resolved by human corrections. Ascends only.
     pub uncertainty_resolved: u64,
-    
+
+    /// Highest net uncertainty ever held after an admitted event. Ascends only.
+    pub peak_uncertainty: u64,
+
     /// Maximum net uncertainty allowed before human veto required.
     pub autonomy_threshold: u64,
+
+    /// Head of the operator's correction-grant chain (A7).
+    pub correction_anchor: [u8; 32],
+
+    /// Number of correction grants consumed (A7). Ascends only.
+    pub corrections_consumed: u64,
 }
 ```
 
-**Why two counters?** The containment monitor requires every quantity to move in exactly one direction (the lattice property). A single "current uncertainty" score that goes up and down would break the mathematical guarantees. By having two monotone-increasing counters, we maintain the lattice while computing `current_uncertainty = incurred - resolved`.
+**Why counters rather than one score?** The containment monitor requires every quantity to move in exactly one direction, which is what makes the lattice argument work. A single "current uncertainty" that rose and fell would break it. Two ascending counters preserve the lattice while still expressing a quantity that goes both ways: `current_uncertainty = incurred - resolved`, floored at zero.
+
+**Why a third counter?** Because the first two are lossy. Take two runs with a threshold of 100. One climbs to 100, receives an 80-unit correction, and stops. The other climbs to 20 and stops. Both end with net 20, and if a correction had also been applied to the second run the totals could be made to match exactly. From `incurred` and `resolved` alone there is no way to tell which run spent time at its limit. `peak_uncertainty` is the high-water mark of the net figure, and since the monitor only raises it to a value the threshold check has already cleared, `peak <= threshold` is equivalent to "no single admitted inference was ever over threshold". That is the per-step guarantee, carried in one extra `u64` instead of the whole ledger.
+
+A correction never lowers the mark. This is deliberate rather than an implementation shortcut: a correction returns headroom for future work, it does not retract a decision that was already taken.
 
 ### 2. The "Pause and Reflect" Events
 
@@ -46,12 +59,11 @@ Event::Infer {
     uncertainty_score: u64,  // NEW: agent declares its doubt
 }
 
-Event::RequestHumanVeto {
-    current_uncertainty: u64,  // Agent recognizes it needs help
-}
+// A8: no payload. The agent may say it is stuck, and nothing else.
+Event::RequestHumanVeto,
 
 Event::HumanCorrection {
-    uncertainty_resolved: u64,  // Human provides guidance
+    grant: CorrectionGrant,  // A7: the operator's authorisation, not a bare amount
 }
 ```
 
@@ -60,8 +72,8 @@ Event::HumanCorrection {
 2. Containment monitor checks: `(incurred - resolved) + score > threshold?`
 3. If YES: `Decision::Deny(DenyReason::UncertaintyTooHigh)`
 4. Agent emits `RequestHumanVeto` (cryptographically logged)
-5. Human operator provides `HumanCorrection` which increases `uncertainty_resolved`
-6. Agent can now proceed with reduced net uncertainty
+5. Human operator provides `HumanCorrection` carrying a grant from the provisioned chain, which increases `uncertainty_resolved`
+6. Agent can now proceed with reduced net uncertainty, but `peak_uncertainty` still records how high it went
 
 ### 3. Axiom A6: Epistemic Humility
 
@@ -75,9 +87,14 @@ let new_uncertainty = current_uncertainty
 if new_uncertainty > self.autonomy_threshold {
     return deny(DenyReason::UncertaintyTooHigh);
 }
+
+// Cleared. Record the high-water mark, which a later correction cannot lower.
+next.peak_uncertainty = self.peak_uncertainty.max(new_uncertainty);
 ```
 
 This is checked **before** every admitted inference. The agent cannot bypass it, forge it, or disable it. If uncertainty is too high, the inference is refused with the same cryptographic finality as running out of time or budget.
+
+The flooring at zero in `saturating_sub` is load-bearing in two directions. It stops an over-correction reading as a negative quantity that would wrap to something enormous, and it stops an operator banking credit, because resolving uncertainty that was never incurred buys no headroom. Without the floor, `HumanCorrection` would be a back door for raising a threshold the provisioner fixed. The consequence worth stating plainly: a request whose own score exceeds the whole threshold is never admissible, however much correction precedes it. Corrections only return headroom that earlier admitted inferences consumed.
 
 ### 4. Verified at Startup
 
@@ -97,6 +114,57 @@ if decision.is_admitted() {
 ```
 
 If the check finds any state where an inference is admitted despite exceeding the threshold, **the agent refuses to start**. The corrigibility guarantee is verified before the first request is served.
+
+The high-water mark adds two more obligations, both checked on every transition:
+
+```rust
+// The mark must dominate the net uncertainty the successor actually holds, so
+// no transition can pass through a level without recording it.
+if from.peak_uncertainty >= net_before && to.peak_uncertainty < net_after {
+    record("A6", "peak must dominate the net uncertainty of every successor");
+}
+
+// And no admitted event may push the mark past the threshold.
+if decision.is_admitted()
+    && from.peak_uncertainty <= from.autonomy_threshold
+    && to.peak_uncertainty > to.autonomy_threshold
+{
+    record("A6", "no admitted event may raise peak above the threshold");
+}
+```
+
+Both are stated inductively, conditioned on the predecessor already satisfying them. The enumeration is a full cross product, so it includes states no run can reach, such as a zero mark sitting beside a nonzero net. Demanding the property unconditionally would flag those, which says nothing about the transition function. Demanding preservation says the useful thing: no transition can be the first to break it, and the state `ContainmentState::new` produces satisfies both.
+
+The abstraction is now `4 phases x 2^5 capability sets x 3^6 numeric values x 2 correction anchors`, or **186,624 states**, and the whole check runs in about 0.3 s.
+
+### 5. A7: Non-Self-Authorisation
+
+A6 on its own is decorative. An agent that accumulates uncertainty to the threshold and then emits its own `HumanCorrection` satisfies A6 forever while being constrained by nothing: the axiom holds, and it enforces nothing.
+
+A7 closes that. `HumanCorrection` carries a `CorrectionGrant` rather than a bare amount, and the monitor admits it only if the grant hashes to the current correction anchor.
+
+The construction is a SHA-256 reverse hash chain. The provisioner builds the chain, publishes only the head, and hands the grants to the operator. Each grant is:
+
+- **verifiable by hashing, unforgeable without a preimage.** The agent can check a grant but cannot mint one, which is exactly the asymmetry needed.
+- **single-use.** The anchor advances to `grant.next_anchor` on consumption, so a replay fails.
+- **ordered.** The chain must be spent front to back, so the agent cannot skip ahead to a larger authorisation.
+- **amount-bound.** The amount is hashed into the link, so a genuine grant cannot be inflated.
+
+Two design consequences. The chain length is the operator's ceiling on total resolvable uncertainty for the whole mission, decided in advance. And a mission provisioned with no chain fails closed: the anchor is `CHAIN_END`, which authorises nothing, so the agent halts at the threshold permanently. Treating an absent chain as "any correction is fine" would reintroduce precisely the hole A7 exists to close.
+
+Signatures would also work, and were rejected here. ML-DSA or Ed25519 in the containment core means a new dependency in the one crate that should be readable end to end, and preimage resistance already buys verify-but-not-forge with no dependency at all. The tradeoff is that grants are pre-committed rather than issued on demand, which is a real limitation: an operator who wants to authorise more than the chain allows must reprovision.
+
+`corrections_consumed` is recorded in the ledger, and the anchor is not. The count is what an auditor needs, how many times the agent was released against how many releases the operator authorised. Publishing successive chain links would leak the chain's shape for no benefit.
+
+### 6. A8: Non-Manipulation (candidate)
+
+A6 gives the agent a channel for summoning a human. That channel is also where an agent with a preference about the answer would most like to make its case, so the channel is empty.
+
+`Event::RequestHumanVeto` is a unit variant. An earlier revision passed the agent's own `current_uncertainty` along with the request, commented as being for logging, and that is the mistake worth naming: it is a field the agent controls, on the one path that exists to influence a human, and the monitor would have signed it into the ledger. Any such field is somewhere to put a framing, or a number chosen to make one answer look obvious.
+
+Everything an operator needs is already in monitor state the agent cannot write: both accumulators, the peak, the threshold, and the consumption count. The agent's contribution is one bit, "I am stuck."
+
+A8 is a **candidate** axiom, not a proven one, and the distinction is not modesty. A1 to A7 are predicates over transitions, so the model checker can try to falsify them. A8 is a property of the event surface: what backs it is the absence of a field, plus `test_a8_veto_request_carries_no_agent_supplied_data`, which stops compiling if the field returns. Stating "the agent did not influence the operator" as a predicate over containment state is an open problem, and solving it would be a real contribution rather than a bookkeeping change.
 
 ---
 
@@ -148,6 +216,9 @@ These are public, tamper-evident metrics. An agent that **never** triggered `Unc
 
 **If the startup check passes and the agent executes the containment monitor honestly:**
 - No inference is admitted when `(self-reported uncertainty) > autonomy_threshold`
+- **No admitted inference was ever over threshold**, not merely the last one. The proof carries `peak <= threshold`, so a run that crossed the line mid-mission and was corrected back under cannot produce a valid attestation
+- Uncertainty was resolved only by grants the agent could verify but not forge, and the ledger records how many it spent
+- The request for human guidance carried nothing the agent chose
 - Every high-uncertainty decision is cryptographically logged
 - The agent cannot forge ledger entries to bypass the threshold
 - The human operator can audit the self-reported uncertainty trajectory post-mission
@@ -294,21 +365,24 @@ A6 enforces the threshold but does not verify that `uncertainty_score` is comput
 - Use calibration techniques from ML reliability research
 - Add a "minimum uncertainty per disclosure bit" policy to prevent systematic underestimation
 
-### 2. Dynamic Threshold Adjustment
+### 2. A Falsifiable A8
 
-Current threshold is fixed at provisioning. Could support:
-- Human operator adjusting threshold mid-mission (logged event)
-- Threshold that decreases as the agent's track record improves
-- Different thresholds for different capability classes
+Non-manipulation is currently a missing field plus a test. Turning it into a predicate over containment state, something a model checker could try to break, is an open problem and the most interesting one on this list after estimator honesty.
 
-### 3. Integration with FHE Inference
+### 3. Grants Issued on Demand
+
+The A7 chain is fixed at provisioning, which caps total resolvable uncertainty for the mission and means an operator who wants to authorise more must reprovision. A signature scheme would remove the cap at the cost of a dependency in the containment core. Worth revisiting if the cap turns out to bind in practice.
+
+Threshold adjustment mid-mission is deliberately *not* on this list. A threshold the operator can raise while the agent runs is a threshold the agent has an incentive to argue for, which is the manipulation surface A8 exists to close.
+
+### 4. Integration with FHE Inference
 
 Current implementation tracks uncertainty for admitted inferences. Could extend to:
 - Estimate uncertainty from FHE inference internals (encrypted confidence scores)
 - Prove in the circuit that uncertainty was computed over the encrypted activations
 - Make the uncertainty calculation part of the homomorphic execution itself
 
-### 4. Multi-Agent Corrigibility
+### 5. Multi-Agent Corrigibility
 
 For multi-agent systems:
 - Shared uncertainty budget across agents
@@ -324,44 +398,58 @@ For multi-agent systems:
 | **Human-in-the-loop ML** | Manual gating | None | Policy-based | No | Assumed honest |
 | **Confidence thresholding** | Model output | Behavioral | Training-time | No | Calibration required |
 | **Constitutional AI** | RL reward | Evaluation | Learned | No | Indirect (via reward) |
-| **CHRONOS A6** | Containment axiom | Startup model check + erasure proof | Cryptographic | Yes | **F_HONEST-UNCERTAINTY** |
+| **CHRONOS A6 and A7** | Containment axiom | Startup model check + erasure proof | Cryptographic | Yes, per step | **F_HONEST-UNCERTAINTY** |
 
-The key difference: A6 makes the pause threshold a **cryptographic property** of the containment monitor, verified before the agent starts and bound into the erasure proof. However, like all entries in this table, it assumes the uncertainty signal is computed honestly.
+The key difference: A6 makes the pause threshold a **cryptographic property** of the containment monitor, verified before the agent starts and bound into the erasure proof, and A7 makes it a property the agent cannot clear on its own. However, like every entry in this table, it assumes the uncertainty signal is computed honestly.
 
 ---
 
 ## Status
 
 **Implemented:**
-- ✅ Uncertainty counters (monotone lattice)
-- ✅ `HUMAN_INTERACTION` capability
-- ✅ `RequestHumanVeto` and `HumanCorrection` events
-- ✅ Axiom A6 enforcement in `step()`
-- ✅ A6 verification in `verify_axioms()`
-- ✅ Ledger records include uncertainty fields
-- ✅ Containment commitment binds uncertainty trajectory
+- Uncertainty counters, three of them, monotone lattice
+- `HUMAN_INTERACTION` capability
+- `RequestHumanVeto` and `HumanCorrection` events
+- A6 enforcement in `step()`, per admitted inference
+- A6 high-water mark, so the per-step guarantee survives into the terminal state
+- A7 correction-grant chain in `chronos-core::correction`, with `chronos-provision` issuing the chain and writing `correction_grants.json` for the operator
+- A8 as a payload-free event, held in place by a test
+- A6 and A7 verification in `verify_axioms()`, 186,624 states
+- Ledger records carry `uncertainty_incurred_after`, `uncertainty_resolved_after`, `peak_uncertainty_after` and `corrections_consumed_after`
+- Containment commitment binds the uncertainty trajectory
+- Two in-circuit range checks: `incurred <= resolved + threshold` and `peak <= threshold`
+- HTTP endpoints `/request-veto` and `/human-correction`, the latter needing both a caller MAC and an A7 grant
 
-**Unimplemented:**
-- ⏸️ Agent-side uncertainty estimation (currently agent must compute and declare)
-- ⏸️ HTTP API endpoints for `/request-veto` and `/human-correction`
-- ⏸️ Circuit constraints proving uncertainty was computed correctly
-- ⏸️ Integration with `chronos-agent` request handlers
+**Not implemented:**
+- Agent-side uncertainty estimation. The agent must compute and declare a score; nothing here produces one
+- Circuit constraints proving the score was computed correctly, which is `F_HONEST-UNCERTAINTY` and the largest remaining gap
+- Any way to state A8 as a falsifiable predicate rather than a missing field
 
 ---
 
 ## Technical Guarantees
 
-**Theorem (Epistemic Humility Enforcement):**  
+**Claim (Epistemic Humility Enforcement).**
 If `verify_axioms()` returns `is_sound() == true` and the agent executes the containment monitor honestly, then for every admitted `Event::Infer`:
 
 ```
-(uncertainty_incurred - uncertainty_resolved) + uncertainty_score ≤ autonomy_threshold
+(uncertainty_incurred - uncertainty_resolved) + uncertainty_score <= autonomy_threshold
 ```
 
-**Proof sketch:** By exhaustive verification over the abstract state space. The model checker enumerates all reachable states and confirms A6 holds on every admitted inference transition. QED.
+and for every reachable state:
 
-**Corollary (Proof-Carrying Interruptibility):**  
-An agent that produces a valid erasure proof with containment commitment `C` is guaranteed to have never admitted an inference where self-reported net uncertainty exceeded the threshold, because `C` is a Poseidon commitment over the ledger records that include `uncertainty_incurred_after` and `uncertainty_resolved_after` for every event. This does not establish that the uncertainty scores reflected true epistemic uncertainty (see `F_HONEST-UNCERTAINTY`).
+```
+peak_uncertainty <= autonomy_threshold
+```
+
+**Basis.** Exhaustive checking over the abstract state space. The checker enumerates the product described above and confirms both predicates on every transition. This is a bounded model check over a three-valued abstraction, not a mechanised proof: it is sound for the order properties, which depend only on the direction of change, and it says nothing about concrete arithmetic beyond the saturating cases that are unit-tested separately. Calling it QED would overstate what a cross product establishes.
+
+**Consequence (Proof-Carrying Interruptibility).**
+An agent that produces a valid erasure proof with containment commitment `C` never admitted an inference whose self-reported net uncertainty exceeded the threshold. Two independent bindings support that. `C` is a Poseidon commitment over the summary, and the circuit checks `peak <= threshold` directly, so the claim does not rest on the terminal totals alone. Separately, the per-record trajectory is bound transitively through the SHA-256 chain head the summary carries.
+
+This is where the earlier terminal-only formulation was weaker than it sounded. `incurred <= resolved + threshold` is satisfied by a run that went over the line and then collected enough grants to come back under, and such a run is indistinguishable from a compliant one by its totals. The peak check is what removes that case.
+
+What none of this establishes is that the scores reflected true epistemic uncertainty. See `F_HONEST-UNCERTAINTY`.
 
 ---
 

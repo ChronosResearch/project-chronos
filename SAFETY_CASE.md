@@ -126,12 +126,19 @@ can check afterwards.
 
 ## Status
 
-The prototype implements all four properties with a measured artifact: 8,267 real
+The prototype implements all four properties with a measured artifact: 12,966 real
 R1CS constraints, 128-byte proofs verifying in 1 ms, and an end-to-end test
 crossing the provisioner/agent boundary with real sequential squarings. The
 containment axioms are checked at startup by exhaustive enumeration over the
-*abstraction*, 1,728 states, the product of the finite capability, budget and
-lifecycle domains, not over the concrete state space, which is unbounded.
+*abstraction*, 186,624 states, the product of the finite capability, budget,
+uncertainty and lifecycle domains, not over the concrete state space, which is
+unbounded.
+
+Seven axioms are checked that way. An eighth, non-manipulation, is claimed but not
+model-checked: it is a property of the event surface rather than a predicate over
+transitions, so what backs it is a missing field and a test, not an enumeration.
+The distinction is recorded in [`CORRIGIBILITY.md`](CORRIGIBILITY.md) rather than
+smoothed over here.
 
 FHE inference is the largest gap between the prototype and a deployable system.
 Measured on an 8-core Intel Core 5 210H, cost per homomorphic multiplication is

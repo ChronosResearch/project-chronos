@@ -132,7 +132,7 @@ A full Powers-of-Tau ceremony (BGM17) is **implemented and tested**, including p
 
 Value alignment. CHRONOS bounds *when* an agent may act and *what* it may touch. It says nothing about what the agent wants. A misaligned agent under CHRONOS is still misaligned; it simply stops on schedule and leaves an audit trail.
 
-## Containment: A1 to A7
+## Containment: A1 to A7, plus A8
 
 Containment policies are normally imperative checks scattered across request handlers, which admits no global statement: you cannot say what the checks collectively guarantee, so you cannot test whether a new handler broke it.
 
@@ -142,7 +142,7 @@ Instead, state is a lattice in which every component moves in one direction only
 phase:       Armed < Active < Locked < Erased    (ascend only)
 capability:  subsets of Capabilities             (shrink only)
 budgets:     N                                   (descend only)
-uncertainty: two monotone accumulators           (ascend only)
+uncertainty: three monotone accumulators         (ascend only)
 ```
 
 Seven invariants hold over it.
@@ -154,8 +154,14 @@ Seven invariants hold over it.
 | A3 | Phase irreversibility | `phase(s')` is at least `phase(s)` |
 | A4 | Deadline dominance | no admitted operation's declared completion exceeds the deadline |
 | A5 | Erasure liveness | `Erased` is reachable in one step from every state |
-| A6 | Epistemic humility | no inference is admitted while self-reported uncertainty exceeds the autonomy threshold |
+| A6 | Epistemic humility | no inference is admitted while self-reported uncertainty exceeds the autonomy threshold, and the peak ever reached stays within it |
 | A7 | Non-self-authorisation | uncertainty is resolved only by an operator grant the agent cannot forge |
+
+One further property is claimed but not model-checked:
+
+| | Candidate | Statement |
+|---|---|---|
+| A8 | Non-manipulation | the agent's request for human guidance carries no agent-supplied data |
 
 A1 with A3 gives irreversibility: no sequence re-arms an erased agent. A4 is the containment analogue of the cryptographic deadline, in that the VDF stops the agent *decrypting* after `T` while A4 stops it *starting work it cannot finish*. A5 rules out a wedged state from which the agent can no longer be shut down.
 
@@ -163,9 +169,13 @@ A1 with A3 gives irreversibility: no sequence re-arms an erased agent. A4 is the
 
 A7 works by hash chain. The provisioner builds a chain of correction grants and publishes only the head, while the operator holds the grants. Each grant is verifiable by hashing but unforgeable without a preimage, single-use because the anchor advances, ordered, and amount-bound because the amount is hashed into the link. The chain length caps total resolvable uncertainty for the whole mission, so the operator decides in advance how much doubt it is prepared to absolve. A mission provisioned with no chain fails closed: the agent halts at the threshold permanently.
 
-**Verification.** At startup the agent enumerates the full reachable product of the phase lattice, the capability powerset, a three-valued abstraction of each numeric quantity, and both live and exhausted correction chains, giving **62,208 abstract states**. It applies every event to every state and checks A1 to A7 on each transition. A violation is a startup failure, not a log line.
+**A6 is enforced per step, not just at the end.** The monitor tracks a third accumulator, `peak_uncertainty`, the highest net uncertainty the run ever held. It exists because totals are lossy: a run that crossed the threshold and was then corrected back under leaves exactly the same `incurred` and `resolved` as a run that never crossed it, so a terminal check on those two numbers cannot tell the two apart. The high-water mark can, and since the monitor only ever raises it to a value the threshold check has already cleared, a proof carrying `peak <= threshold` is a proof that no single admitted inference was over threshold. A correction returns headroom for future work; it never lowers the mark, because it does not retract a decision already taken.
 
-The abstraction is sound for the order properties, which depend only on the direction of change. It is not a proof about concrete arithmetic; saturation and overflow cases are tested separately, since those are exactly what an interval abstraction cannot see.
+**A8, non-manipulation, is a candidate axiom.** The channel the agent uses to summon a human carries no payload at all. `RequestHumanVeto` is a unit variant: the agent may say that it is stuck, and nothing else. An earlier revision passed the agent's own uncertainty figure along with the request, which reads as harmless logging and is not, because it is a field the agent controls on the one channel that exists to influence a human. Everything an operator needs is already in monitor state the agent cannot write. A8 is listed as a candidate rather than a proven invariant because it is structural, a missing field plus a test that keeps it missing, not a runtime predicate the model checker can falsify.
+
+**Verification.** At startup the agent enumerates the full product of the phase lattice, the capability powerset, a three-valued abstraction of each of the six numeric quantities, and both live and exhausted correction chains, giving **186,624 abstract states**. It applies every event to every state and checks A1 to A7 on each transition. A violation is a startup failure, not a log line. The whole check takes about 0.3 s.
+
+The abstraction is sound for the order properties, which depend only on the direction of change. It is not a proof about concrete arithmetic; saturation and overflow cases are tested separately, since those are exactly what an interval abstraction cannot see. The two peak-uncertainty obligations are checked inductively, conditioned on the predecessor already satisfying them, because a full cross product includes states no run can reach and requiring the property unconditionally would flag those rather than say anything about the transition function.
 
 Full design notes and threat model: [`CORRIGIBILITY.md`](CORRIGIBILITY.md).
 
@@ -282,13 +292,13 @@ The third column is the one that matters. Wall time grows linearly in `T` while 
 
 | Metric | Erasure | Identity |
 |---|---:|---:|
-| R1CS constraints | **10,738** | about 1,500 |
+| R1CS constraints | **12,966** | about 1,500 |
 | Public inputs | 5 | 1 |
 | Prove | about 160 ms | about 56 ms |
 | Verify | 1 ms | 1 ms |
 | Proof size | 128 B | 128 B |
 
-Every constraint group is load-bearing: Poseidon commitments to `y`, the ciphertext and the key, the in-circuit KDF, authenticated decryption, and the containment terminal-state predicates including the A6 inequality. Removing any group breaks a test. The count rose from 8,267 when A6 and A7 were added.
+Every constraint group is load-bearing: Poseidon commitments to `y`, the ciphertext and the key, the in-circuit KDF, authenticated decryption, and the containment terminal-state predicates including both A6 inequalities. Removing any group breaks a test. The count went 8,267 with A1 to A5, 10,738 when A6 and A7 arrived, and 12,966 once A6 was enforced per step rather than only at termination. The second range comparison is most of that last increase; range checks are not cheap in R1CS, which is the price of the stronger claim.
 
 ### Homomorphic inference scaling
 
@@ -306,7 +316,7 @@ Triple-pass wipe plus `munlock` on 32 bytes is under 1 microsecond, and allocati
 
 ### Test suite
 
-`chronos-core` 89, `chronos-snark` 142, `chronos-agent` 58, all passing. One FHE scaling test is marked `#[ignore]` because it takes minutes.
+`chronos-core` 98, `chronos-snark` 142, `chronos-agent` 58 plus 15 end-to-end, all passing. One FHE scaling test is marked `#[ignore]` because it takes minutes.
 
 The suite includes an end-to-end lifecycle test that crosses the provisioner and agent boundary with **real sequential squarings**, drives a full A6 and A7 cycle (an inference refused for excess uncertainty, a self-recorded pause, an operator grant spent, the request then admitted), and asserts the proof verifies against commitments the agent never chose. Negative cases assert that a fabricated key, an incomplete VDF, a mission that never erased, a run ending over the uncertainty threshold, and a forged or replayed correction grant are each unprovable.
 
@@ -335,13 +345,12 @@ Ordered by how much each limits the security claim.
 | F_HONEST-UNCERTAINTY | A6 and A7 bound a number the agent reports, so an agent always reporting zero is unconstrained by them | commit the uncertainty estimator at provisioning and prove its evaluation in-circuit |
 | F_OS axiomatised | The erasure claim reduces to it and no further | bind a TDX or SEV-SNP measurement into the public inputs |
 | Circuit cannot bind memory location | Inherent to SNARKs, and the remainder *is* F_OS | requires hardware attestation |
-| A6 enforced only at the terminal state in-circuit | A run that went over threshold mid-mission and later collected enough grants still verifies | fold a running peak-uncertainty witness into the ledger |
 | FHE inference is toy-scale | Two inputs, two hidden units, with flat cost of about 2 s per homomorphic multiplication | narrower ciphertext type than `FheInt64`, then Concrete-ML or a GPU build |
 | `FheInt64` wraps silently on overflow | Real trained weights can overflow intermediate sums with no error | bound weight magnitude and layer width |
 | `/infer` uses `bincode::deserialize` on untrusted bytes | Size-capped but not a hardened parser | replace with `tfhe::safe_serialization` |
 | mTLS not enforced | Requests authenticated but not confidential | wire rustls to the axum acceptor |
 | Shared fallback modulus | Deployments without `certN.bin` share one group | use `chronos-provision` to generate a per-mission modulus |
-| Contracts uncompiled | Nothing deployed, and no `solc` or `forge` in CI | add a Foundry job |
+| Contracts compile in CI but verify nothing | A required `forge build` job proves they build under a pinned `solc`, not that the verifier accepts a real proof, because the verifying key comes from a setup artifact the repository does not commit | commit a ceremony artifact, then add an on-chain round trip |
 | Chronos-AEAD unaudited | Custom encrypt-then-MAC over standard Poseidon, with no third-party cryptanalysis | external review, or replace with an established AEAD |
 | No post-quantum VDF | Sequentiality rests on factoring | class-group VDF, unknown order by construction from a public discriminant |
 
@@ -353,17 +362,17 @@ Ordered by effect on the security claim, which is the only ordering that matters
 
 **2. Make uncertainty honest, not just bounded.** Commit the uncertainty estimator at provisioning time and prove in-circuit that the reported score is the output of *that* estimator on the actual input. This converts F_HONEST-UNCERTAINTY from an assumption into a constraint, and it reuses the trust separation that already makes `sk_commit` binding. The hard part is arithmetising a useful estimator cheaply. This is the most interesting open problem here.
 
-**3. Per-step A6, not just terminal A6.** Fold a monotone peak-uncertainty accumulator into the ledger so the circuit can enforce that the threshold was never crossed at any point, rather than merely not crossed at the end. This is much cheaper than folding the whole variable-length ledger.
+**3. Discharge F_OS.** Bind a TDX or SEV-SNP measurement into the public inputs. This does not eliminate trust, it relocates it from an axiom to a hardware vendor, which is an improvement worth being explicit about rather than overselling.
 
-**4. Discharge F_OS.** Bind a TDX or SEV-SNP measurement into the public inputs. This does not eliminate trust, it relocates it from an axiom to a hardware vendor, which is an improvement worth being explicit about rather than overselling.
+**4. FHE at realistic scale.** One bootstrap per hidden unit dominates cost. A narrower ciphertext type than `FheInt64` is the obvious first optimisation, since worst-case magnitude needs about 23 bits rather than 64.
 
-**5. Non-manipulation, a candidate A8.** Freeze the veto-request event schema so the agent can ask for help but cannot attach persuasive context to bias the human's decision. This maps to a named desideratum in the corrigibility literature that has not, as far as we know, been made cryptographically enforceable.
+**5. Post-quantum sequentiality.** A class-group VDF removes the modulus trust question by construction rather than working around it. See [chiavdf](https://github.com/Chia-Network/chiavdf).
 
-**6. FHE at realistic scale.** One bootstrap per hidden unit dominates cost. A narrower ciphertext type than `FheInt64` is the obvious first optimisation, since worst-case magnitude needs about 23 bits rather than 64.
+**6. Deploy and audit the contracts.** CI now compiles them under a pinned `solc`, which is a floor rather than a result. Next is a testnet deployment with the on-chain smoke test in [`contracts/README.md`](contracts/README.md), and a review of the pairing logic by someone who has written a Groth16 verifier before.
 
-**7. Post-quantum sequentiality.** A class-group VDF removes the modulus trust question by construction rather than working around it. See [chiavdf](https://github.com/Chia-Network/chiavdf).
+**7. Turn A8 into something checkable.** Non-manipulation is currently a missing field and a test that keeps it missing. That is worth having, but it is an argument about the event surface rather than a property a model checker can falsify, and there is no obvious way to state "the agent did not influence the operator" as a predicate over containment state. Finding one would be a genuine contribution.
 
-**8. Compile and audit the contracts.** Add a Foundry job to CI, then deploy and verify on a testnet.
+Three items from the previous list are done and no longer here: per-step A6 (item 3, now the `peak_uncertainty` accumulator with a second in-circuit range check), candidate A8 (item 5, now a payload-free `RequestHumanVeto`), and Solidity in CI (item 8, now a required `forge build` gate).
 
 ## Build and test
 

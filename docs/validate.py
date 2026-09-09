@@ -21,10 +21,16 @@ BANNED = [
     "guarantees safety", "provably aligned agent", "unhackable",
 ]
 
-# Figures that must agree with benchmark-results/.
+# Figures that must agree with benchmark-results/ and with the test suite.
+#
+# The constraint count and the abstract state count both moved when A6 and A7
+# were added and again when A6 became a per-step check, so they are the two
+# entries here most likely to go stale. `cargo test -p chronos-snark --lib
+# test_constraint_count_is_in_expected_band -- --nocapture` prints the first;
+# `verify_axioms().states_explored` is the second.
 REQUIRED = [
-    "8,267", "128", "1,728", "1975 ms", "1846 ms", "2074 ms",
-    "Wesolowski" if False else "sequential squarings",
+    "12,966", "128", "186,624", "1975 ms", "1846 ms", "2074 ms",
+    "sequential squarings",
     "single-party", "AGPL-3.0",
 ]
 

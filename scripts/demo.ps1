@@ -198,7 +198,7 @@ enabled = false
     # ── 3. Start the agent ───────────────────────────────────────────────────
     Write-Banner 'AGENT'
     Write-Step 'Starting the agent'
-    Write-Detail 'verifies containment axioms A1-A5 over 1,728 abstract states,'
+    Write-Detail 'verifies containment axioms A1 to A7 over 186,624 abstract states,'
     Write-Detail 'then refuses to start if any is violated'
 
     $agentExe = Join-Path $RepoRoot 'target\release\chronos-agent.exe'
