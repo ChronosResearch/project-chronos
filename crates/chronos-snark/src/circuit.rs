@@ -140,21 +140,29 @@ pub const PUBLIC_INPUT_COUNT: usize = 5;
 ///
 /// # A6 (epistemic humility) fields
 ///
-/// The last three fields carry the uncertainty trajectory. `uncertainty_incurred`
-/// and `uncertainty_resolved` are the terminal values of the two monotone
-/// accumulators; `autonomy_threshold` is the provisioner-fixed bound. The circuit
-/// enforces `incurred <= resolved + threshold`, which is the terminal form of A6.
+/// Four fields carry the uncertainty trajectory. `uncertainty_incurred` and
+/// `uncertainty_resolved` are the terminal values of the two monotone
+/// accumulators, `peak_uncertainty` is the highest net figure the run ever held,
+/// and `autonomy_threshold` is the provisioner-fixed bound. The circuit enforces
+/// two comparisons: `incurred <= resolved + threshold`, the terminal form, and
+/// `peak <= threshold`, the per-step form.
 ///
-/// **What that does and does not establish.** A6 holds *per admitted inference* at
-/// runtime, and every per-step value is bound transitively through `chain_head`,
-/// so the trajectory is tamper-evident. The in-circuit check is the weaker
-/// *terminal* predicate: it rules out a run that ends over threshold, but a run
-/// that admitted an over-threshold inference and later received enough
-/// `HumanCorrection` to come back under would still satisfy it. Re-deriving the
-/// per-step check in-circuit would require folding the whole variable-length
-/// ledger, which the fixed circuit shape forbids. Separately, none of this speaks
-/// to whether the reported `uncertainty_score` was honest, see
-/// `F_HONEST-UNCERTAINTY` in `CORRIGIBILITY.md`.
+/// **Why the peak is the one that matters.** The terminal predicate alone is weak.
+/// It rules out a run that *ends* over threshold, but a run that admitted an
+/// over-threshold inference and then collected enough `HumanCorrection` to come
+/// back under satisfies it perfectly well, and the totals it leaves behind are
+/// identical to those of a run that never crossed the line. The high-water mark is
+/// what separates the two, and because the monitor only ever raises it to a value
+/// the threshold check has already cleared, a proof that carries `peak <=
+/// threshold` is a proof that *no single admitted step* was over threshold. That is
+/// the per-step guarantee, in a fixed-size summary, without folding the
+/// variable-length ledger the circuit shape forbids.
+///
+/// What none of this establishes is honesty. Every figure here derives from the
+/// agent's own `uncertainty_score` reports, and the circuit cannot see whether
+/// those reflected its real epistemic state, see `F_HONEST-UNCERTAINTY` in
+/// `CORRIGIBILITY.md`. A6 buys interruptibility conditional on honest self-report,
+/// and the peak makes that conditional guarantee tight rather than terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContainmentSummary {
     /// Terminal phase discriminant. Must be [`Phase::Erased`].
@@ -179,6 +187,8 @@ pub struct ContainmentSummary {
     pub uncertainty_incurred: u64,
     /// A6: terminal cumulative uncertainty resolved by human correction.
     pub uncertainty_resolved: u64,
+    /// A6: the highest net uncertainty the run ever held, per-step high-water mark.
+    pub peak_uncertainty: u64,
     /// A6: the provisioner-fixed autonomy threshold.
     pub autonomy_threshold: u64,
     /// A7: how many operator correction grants the run consumed.
@@ -191,7 +201,7 @@ pub struct ContainmentSummary {
 
 impl ContainmentSummary {
     /// Field elements in the canonical encoding.
-    pub const ELEMS: usize = 13;
+    pub const ELEMS: usize = 14;
 
     /// The capability bits a correctly erased agent must retain: erasure
     /// attestation only. Every other capability must have been revoked.
@@ -219,6 +229,7 @@ impl ContainmentSummary {
             chain_head_hi: hi,
             uncertainty_incurred: state.uncertainty_incurred,
             uncertainty_resolved: state.uncertainty_resolved,
+            peak_uncertainty: state.peak_uncertainty,
             autonomy_threshold: state.autonomy_threshold,
             corrections_consumed: state.corrections_consumed,
         }
@@ -242,6 +253,7 @@ impl ContainmentSummary {
             self.chain_head_hi,
             Fr::from(self.uncertainty_incurred),
             Fr::from(self.uncertainty_resolved),
+            Fr::from(self.peak_uncertainty),
             Fr::from(self.autonomy_threshold),
             Fr::from(self.corrections_consumed),
         ]
@@ -269,6 +281,16 @@ impl ContainmentSummary {
                 .saturating_add(self.autonomy_threshold)
     }
 
+    /// A6 per-step predicate: `peak <= threshold`.
+    ///
+    /// Strictly stronger than [`Self::satisfies_a6`], and worth stating separately
+    /// because it is the one that rules out the interesting cheat. A run can end
+    /// under threshold while having spent time above it; the high-water mark cannot.
+    #[must_use]
+    pub fn satisfies_a6_per_step(&self) -> bool {
+        self.peak_uncertainty <= self.autonomy_threshold
+    }
+
     /// The four constant terminal predicates: erased, fully revoked, budgets zero.
     #[must_use]
     pub fn satisfies_terminal_state(&self) -> bool {
@@ -281,11 +303,11 @@ impl ContainmentSummary {
     /// Whether this summary describes a properly terminated containment run.
     ///
     /// Checked natively so provisioning and tooling can reject a bad summary
-    /// early; the same five predicates are enforced in-circuit, which is what
+    /// early; the same six predicates are enforced in-circuit, which is what
     /// makes them load-bearing.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.satisfies_terminal_state() && self.satisfies_a6()
+        self.satisfies_terminal_state() && self.satisfies_a6() && self.satisfies_a6_per_step()
     }
 }
 
@@ -434,6 +456,17 @@ impl ErasureWitness {
                 self.containment.uncertainty_incurred,
                 self.containment.uncertainty_resolved,
                 self.containment.autonomy_threshold
+            )));
+        }
+        if !self.containment.satisfies_a6_per_step() {
+            return Err(ChronosError::Snark(format!(
+                "erasure witness: A6 (epistemic humility) violated per step: \
+                 peak_uncertainty={} exceeds autonomy_threshold={}. Some admitted \
+                 inference took self-reported net uncertainty over the threshold, \
+                 and a later human correction does not undo that: the terminal \
+                 totals can be brought back into range but the high-water mark \
+                 cannot",
+                self.containment.peak_uncertainty, self.containment.autonomy_threshold
             )));
         }
         // The relation the circuit will enforce. Checking it here converts a
@@ -634,22 +667,30 @@ impl ConstraintSynthesizer<Fr> for ErasureCircuit {
         summary[2].enforce_equal(&FpVar::Constant(Fr::zero()))?;
         summary[3].enforce_equal(&FpVar::Constant(Fr::zero()))?;
 
-        // ── 7b. A6, epistemic humility: incurred <= resolved + threshold ─────
+        // ── 7b. A6, epistemic humility ───────────────────────────────────────
         //
-        // Slots 9, 10 and 11 are `uncertainty_incurred`, `uncertainty_resolved`
-        // and `autonomy_threshold`. Written as an addition on the right because
-        // the field has no saturating subtraction: `incurred - resolved` would
-        // wrap to an enormous element whenever corrections over-resolve, and the
-        // comparison would fail on a run that is actually compliant. Both sides
-        // are sums of `u64` values, so they stay far below `(p-1)/2` and the
-        // checked comparison is sound.
+        // Slots 9 to 12 are `uncertainty_incurred`, `uncertainty_resolved`,
+        // `peak_uncertainty` and `autonomy_threshold`.
         //
-        // This is the *terminal* form of A6. The per-step guarantee is enforced
-        // by the monitor at admission time and bound transitively through the
-        // chain head in slots 7 and 8; it is not re-derived here, because folding
-        // a variable-length ledger is incompatible with a fixed circuit shape.
-        let a6_bound = &summary[10] + &summary[11];
+        // First the terminal form, `incurred <= resolved + threshold`. Written as
+        // an addition on the right because the field has no saturating
+        // subtraction: `incurred - resolved` would wrap to an enormous element
+        // whenever corrections over-resolve, and the comparison would fail on a
+        // run that is actually compliant. Both sides are sums of `u64` values, so
+        // they stay far below `(p-1)/2` and the checked comparison is sound.
+        let a6_bound = &summary[10] + &summary[12];
         summary[9].enforce_cmp(&a6_bound, Ordering::Less, true)?;
+
+        // Then the per-step form, `peak <= threshold`, which is the check that
+        // gives the proof its teeth. The terminal comparison above is satisfied by
+        // any run that finishes under threshold, including one that admitted an
+        // over-threshold inference and was corrected back down afterwards, and the
+        // two are indistinguishable from the totals alone. The monitor only raises
+        // the high-water mark to a net value it has already cleared, so binding the
+        // mark here carries the per-step guarantee into the proof without folding
+        // the variable-length ledger. The full trajectory remains bound
+        // transitively through the chain head in slots 7 and 8.
+        summary[11].enforce_cmp(&summary[12], Ordering::Less, true)?;
 
         // ── 8. The observed buffer reads the wipe pattern ────────────────────
         //
@@ -896,10 +937,15 @@ mod tests {
         let mut disc_bad = base.clone();
         disc_bad.containment.disclosure_remaining = 1;
 
-        // A6: incurred exceeds resolved + threshold.
+        // A6 terminal: incurred exceeds resolved + threshold.
         let mut a6_bad = base.clone();
         a6_bad.containment.uncertainty_incurred =
             base.containment.uncertainty_resolved + base.containment.autonomy_threshold + 1;
+
+        // A6 per step: the totals are fine, the high-water mark is not.
+        let mut a6_peak_bad = base.clone();
+        a6_peak_bad.containment.peak_uncertainty =
+            base.containment.autonomy_threshold + 1;
 
         for (name, w) in [
             ("final_phase", phase_bad),
@@ -907,6 +953,7 @@ mod tests {
             ("op_budget_remaining", op_bad),
             ("disclosure_remaining", disc_bad),
             ("a6_uncertainty_over_threshold", a6_bad),
+            ("a6_peak_over_threshold", a6_peak_bad),
         ] {
             assert!(
                 !w.containment.is_terminal(),
@@ -1009,6 +1056,10 @@ mod tests {
         let mut v = base;
         v.uncertainty_resolved += 1;
         assert_ne!(d, v.commitment(), "uncertainty_resolved must be bound");
+
+        let mut v = base;
+        v.peak_uncertainty += 1;
+        assert_ne!(d, v.commitment(), "peak_uncertainty must be bound");
 
         let mut v = base;
         v.autonomy_threshold += 1;
@@ -1135,10 +1186,83 @@ mod tests {
         assert!(s.satisfies_a6(), "110 <= 50 + 100");
         assert!(s.is_terminal());
 
+        // The high-water mark is the interesting figure here. Net finished at 60,
+        // but the run genuinely sat at 90, and both are under the threshold, so
+        // this run is provable and its attestation says how close it came.
+        assert_eq!(s.peak_uncertainty, 90);
+        assert!(s.satisfies_a6_per_step(), "90 <= 100");
+
         let mut w = good_witness();
         w.containment = s;
         let cs = synthesize(w);
         assert!(cs.is_satisfied().expect("satisfiability"));
+    }
+
+    /// The case the terminal check cannot catch, and the reason `peak_uncertainty`
+    /// exists. This summary passes `incurred <= resolved + threshold` comfortably,
+    /// because corrections brought the totals back into range, yet the run sat
+    /// above the threshold at some point. It must be unprovable.
+    #[test]
+    fn test_rejects_peak_over_threshold_even_when_totals_are_compliant() {
+        let mut w = good_witness();
+        w.containment.autonomy_threshold = 100;
+        w.containment.uncertainty_incurred = 150;
+        w.containment.uncertainty_resolved = 120; // net 30, well inside
+        w.containment.peak_uncertainty = 130; // but it was over the line
+
+        assert!(
+            w.containment.satisfies_a6(),
+            "the terminal predicate is satisfied, which is precisely the problem"
+        );
+        assert!(
+            !w.containment.satisfies_a6_per_step(),
+            "the per-step predicate must reject it"
+        );
+        assert!(
+            w.containment.satisfies_terminal_state(),
+            "only the peak should be failing, so the failure is unambiguous"
+        );
+
+        let err = w.check_shape().expect_err("must be refused before proving");
+        let msg = format!("{err}");
+        assert!(msg.contains("A6"), "the error must name A6, got: {msg}");
+        assert!(
+            msg.contains("peak"),
+            "the error must point at the peak rather than the totals, got: {msg}"
+        );
+
+        let cs = synthesize(w);
+        assert!(
+            !cs.is_satisfied().expect("satisfiability"),
+            "a run that was ever over threshold must be unprovable"
+        );
+    }
+
+    /// The per-step bound is inclusive too, matching the monitor, which denies on
+    /// `net > threshold` rather than `net >= threshold`.
+    #[test]
+    fn test_a6_peak_boundary_is_inclusive_in_circuit() {
+        let mut w = good_witness();
+        w.containment.autonomy_threshold = 40;
+        w.containment.uncertainty_incurred = 40;
+        w.containment.uncertainty_resolved = 0;
+        w.containment.peak_uncertainty = 40; // exactly at the bound
+
+        assert!(w.containment.is_terminal());
+        let cs = synthesize(w);
+        assert!(
+            cs.is_satisfied().expect("satisfiability"),
+            "a run that touched the threshold without crossing it stays provable"
+        );
+
+        // One unit further and it is gone.
+        let mut over = good_witness();
+        over.containment.autonomy_threshold = 40;
+        over.containment.uncertainty_incurred = 40;
+        over.containment.uncertainty_resolved = 0;
+        over.containment.peak_uncertainty = 41;
+        assert!(!over.containment.is_terminal());
+        assert!(!synthesize(over).is_satisfied().expect("satisfiability"));
     }
 
     // ── Public input hygiene ────────────────────────────────────────────────

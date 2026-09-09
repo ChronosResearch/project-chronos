@@ -232,6 +232,7 @@ impl StateMachine {
             current: state
                 .uncertainty_incurred
                 .saturating_sub(state.uncertainty_resolved),
+            peak: state.peak_uncertainty,
             autonomy_threshold: state.autonomy_threshold,
             corrections_consumed: state.corrections_consumed,
         }
@@ -241,21 +242,19 @@ impl StateMachine {
     ///
     /// This changes no budget and no capability, it exists so the pause is
     /// *visible* in the ledger, and therefore in the erasure proof, rather than
-    /// being an invisible stall. `current_uncertainty` is read from the monitor
-    /// rather than accepted from the caller, so the recorded value is the one the
-    /// monitor actually enforced against.
+    /// being an invisible stall.
+    ///
+    /// A8, non-manipulation: the event itself carries nothing. The uncertainty
+    /// figure returned to the caller is read out of the monitor after the fact, so
+    /// it is the value the monitor enforced against rather than a number the agent
+    /// chose to present alongside its plea for help.
     ///
     /// # Errors
     /// Returns [`ChronosError::StateMachine`] if the monitor refuses, which
     /// happens outside `Active` or once `HUMAN_INTERACTION` has been revoked.
     pub async fn request_human_veto(&self) -> ChronosResult<u64> {
         let current = self.uncertainty().await.current;
-        match self
-            .admit(Event::RequestHumanVeto {
-                current_uncertainty: current,
-            })
-            .await
-        {
+        match self.admit(Event::RequestHumanVeto).await {
             Decision::Admit => {
                 warn!(
                     target: "chronos",
@@ -308,9 +307,13 @@ impl StateMachine {
 
 /// The A6 uncertainty trajectory as exposed over HTTP.
 ///
-/// `current` is derived rather than stored: the lattice keeps two monotone
+/// `current` is derived rather than stored: the lattice keeps monotone
 /// accumulators so that every component moves in one direction only, and the
 /// quantity the threshold is compared against is their difference.
+///
+/// A8, non-manipulation: this is the whole of what an operator sees when deciding
+/// whether to spend a correction grant, and every field is read out of the monitor.
+/// Nothing here is supplied by the agent alongside its request for help.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub struct UncertaintyState {
     /// Cumulative self-reported uncertainty incurred by admitted inferences.
@@ -319,6 +322,13 @@ pub struct UncertaintyState {
     pub resolved: u64,
     /// `incurred - resolved`, saturating. The value A6 tests.
     pub current: u64,
+    /// The highest `current` this run ever held, per-step A6.
+    ///
+    /// Exposed because it is the figure `current` cannot give an operator. A run
+    /// sitting comfortably at 20 out of 100 looks identical whether it has been
+    /// there all along or arrived after a correction pulled it down from the
+    /// limit, and those are different situations to be asked for a grant in.
+    pub peak: u64,
     /// The provisioner-fixed bound from `mission_public.json`.
     pub autonomy_threshold: u64,
     /// A7: operator correction grants consumed so far.

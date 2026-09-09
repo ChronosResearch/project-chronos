@@ -168,9 +168,7 @@ fn test_a6_request_human_veto_is_logged_but_does_not_change_state() {
     });
 
     // Agent recognizes it's approaching threshold and requests veto
-    let (d, s_after_veto) = s.step(Event::RequestHumanVeto {
-        current_uncertainty: 90,
-    });
+    let (d, s_after_veto) = s.step(Event::RequestHumanVeto);
 
     assert!(
         d.is_admitted(),
@@ -303,9 +301,7 @@ fn test_a6_request_veto_requires_human_interaction_capability() {
     s_no_interaction.granted = s.granted.revoke(Capabilities::HUMAN_INTERACTION);
 
     // Attempt RequestHumanVeto without capability: denied
-    let (d, _) = s_no_interaction.step(Event::RequestHumanVeto {
-        current_uncertainty: 50,
-    });
+    let (d, _) = s_no_interaction.step(Event::RequestHumanVeto);
     assert_eq!(
         d,
         Decision::Deny(DenyReason::CapabilityRevoked),
@@ -724,4 +720,295 @@ fn test_a7_agent_cannot_exceed_threshold_without_the_operator() {
     let (ok, s) = s.step(Event::HumanCorrection { grant: grants[0] });
     assert!(ok.is_admitted());
     assert!(s.step(step).0.is_admitted(), "released, and only by the operator");
+}
+
+// ─── A6 per step: the high-water mark ────────────────────────────────────────
+//
+// The two accumulators record totals, and totals are lossy. A run that crossed
+// the threshold and was corrected back under leaves exactly the same `incurred`
+// and `resolved` as a run that never crossed it, so a terminal check on those two
+// numbers cannot tell the difference. `peak_uncertainty` is the field that can,
+// and these tests pin the three properties the proof relies on: it tracks the
+// maximum, corrections never lower it, and it never rises above the threshold.
+
+/// The mark follows net uncertainty upward, one admitted inference at a time.
+#[test]
+fn test_a6_peak_tracks_the_maximum_net_uncertainty() {
+    let s = fresh_with_threshold(100);
+    let (_, s) = s.step(Event::MissionInit);
+    assert_eq!(s.peak_uncertainty, 0, "a fresh mission has no peak");
+
+    let (_, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 30,
+    });
+    assert_eq!(s.peak_uncertainty, 30);
+
+    let (_, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 25,
+    });
+    assert_eq!(s.peak_uncertainty, 55, "the mark follows the running net figure");
+}
+
+/// The property the terminal check cannot see. Two runs end with identical
+/// accumulators, but only one of them ever sat at the threshold, and the mark is
+/// what distinguishes them.
+#[test]
+fn test_a6_correction_returns_headroom_without_lowering_the_peak() {
+    let (s, grants) = state_and_grants(100, &[80]);
+    let (_, s) = s.step(Event::MissionInit);
+
+    // Climb to the threshold exactly.
+    let (d, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 100,
+    });
+    assert!(d.is_admitted());
+    assert_eq!(s.peak_uncertainty, 100);
+
+    // The operator returns 80 units of headroom. Net falls to 20.
+    let (d, s) = s.step(Event::HumanCorrection { grant: grants[0] });
+    assert!(d.is_admitted());
+    assert_eq!(
+        s.uncertainty_incurred.saturating_sub(s.uncertainty_resolved),
+        20,
+        "the correction must return headroom"
+    );
+    assert_eq!(
+        s.peak_uncertainty, 100,
+        "a correction restores capacity for future work, it does not retract a \
+         decision already taken, so the mark must not fall"
+    );
+
+    // Further work is admissible again, and the mark only moves if the new net
+    // figure actually exceeds the old one.
+    let (d, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 50,
+    });
+    assert!(d.is_admitted(), "20 + 50 is under the threshold");
+    assert_eq!(s.peak_uncertainty, 100, "net 70 is below the existing mark");
+}
+
+/// The invariant the circuit binds: across every admissible sequence, the mark
+/// stays inside the threshold. If this can be broken natively, the in-circuit
+/// comparison is enforcing a falsehood.
+#[test]
+fn test_a6_peak_never_exceeds_the_threshold() {
+    let threshold = 60;
+    let (s, grants) = state_and_grants(threshold, &[60, 60, 60]);
+    let (_, mut s) = s.step(Event::MissionInit);
+
+    let mut next_grant = 0usize;
+    // Deliberately adversarial: hammer scores that straddle the boundary and take
+    // every correction the chain offers, which is the pattern that would let a
+    // terminal-only check drift over the line.
+    for score in [10u64, 55, 5, 60, 1, 30, 40, 20, 60, 7] {
+        let (d, next) = s.step(Event::Infer {
+            declared_secs: 1,
+            disclosure_bits: 1,
+            uncertainty_score: score,
+        });
+        if d.is_admitted() {
+            s = next;
+        } else if next_grant < grants.len() {
+            let (cd, corrected) = s.step(Event::HumanCorrection {
+                grant: grants[next_grant],
+            });
+            assert!(cd.is_admitted());
+            next_grant += 1;
+            s = corrected;
+        }
+        assert!(
+            s.peak_uncertainty <= threshold,
+            "peak {} exceeded threshold {threshold} after score {score}",
+            s.peak_uncertainty
+        );
+    }
+    assert!(next_grant > 0, "the sequence must actually exercise corrections");
+}
+
+/// A refused inference must leave no trace, including in the mark. Otherwise an
+/// agent could raise its own high-water mark with requests that were never
+/// admitted, and then be unable to prove anything.
+#[test]
+fn test_a6_refused_inference_does_not_raise_the_peak() {
+    let s = fresh_with_threshold(50);
+    let (_, s) = s.step(Event::MissionInit);
+    let (_, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 20,
+    });
+    assert_eq!(s.peak_uncertainty, 20);
+
+    let (d, unchanged) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 40,
+    });
+    assert_eq!(d, Decision::Deny(DenyReason::UncertaintyTooHigh));
+    assert_eq!(unchanged.peak_uncertainty, 20, "a refusal must not move the mark");
+    assert_eq!(unchanged, s);
+}
+
+/// The mark has to reach the ledger, because the ledger is what the erasure proof
+/// summarises. A value the monitor tracks but never records proves nothing.
+#[test]
+fn test_a6_peak_is_recorded_in_the_ledger() {
+    let (s, grants) = state_and_grants(100, &[70]);
+    let mut ledger = ContainmentLedger::new(s, 16);
+    ledger.admit(Event::MissionInit);
+    ledger.admit(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 90,
+    });
+    ledger.admit(Event::HumanCorrection { grant: grants[0] });
+    ledger.admit(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 10,
+    });
+
+    let tail = ledger.tail();
+    assert_eq!(tail[0].peak_uncertainty_after, 0, "init incurs nothing");
+    assert_eq!(tail[1].peak_uncertainty_after, 90);
+    assert_eq!(
+        tail[2].peak_uncertainty_after, 90,
+        "the correction record carries the mark forward unchanged"
+    );
+    assert_eq!(
+        tail[3].peak_uncertainty_after, 90,
+        "net after the second inference is 30, below the mark"
+    );
+    assert_eq!(
+        ledger.state().uncertainty_incurred - ledger.state().uncertainty_resolved,
+        30,
+        "the totals alone would suggest this run never went near the threshold"
+    );
+}
+
+/// The monotonicity check the ledger runs on every transition must reject a
+/// successor whose mark understates the net uncertainty it holds. This is the
+/// clause that stops a future edit to `step` from quietly dropping the update.
+#[test]
+fn test_a6_precedes_rejects_an_understated_peak() {
+    let s = fresh_with_threshold(100);
+    let (_, s) = s.step(Event::MissionInit);
+
+    let mut understated = s;
+    understated.uncertainty_incurred = 40;
+    understated.peak_uncertainty = 0;
+    assert!(
+        !s.precedes(&understated),
+        "a successor holding net 40 with a zero mark must be refused"
+    );
+
+    let mut lowered = s;
+    lowered.peak_uncertainty = 10;
+    let mut then_lowered = lowered;
+    then_lowered.peak_uncertainty = 5;
+    assert!(
+        !lowered.precedes(&then_lowered),
+        "the mark must never descend"
+    );
+}
+
+// ─── A8: non-manipulation (candidate) ────────────────────────────────────────
+//
+// A6 gives the agent a way to summon a human. That channel is also the one place
+// where an agent with an interest in a particular answer would most like to put
+// its case, so the channel is deliberately empty. A8 is structural rather than
+// behavioural: it is not a predicate the model checker can falsify, it is the
+// absence of a field, and what follows is the test that holds the absence in place.
+
+/// The request carries nothing the agent chooses. It is a bare bit: "I am stuck."
+///
+/// A unit variant has exactly one inhabitant, so every veto request any agent can
+/// construct is identical, and the operator's decision therefore rests entirely on
+/// monitor state the agent cannot write. If a payload is ever reintroduced,
+/// `Event::RequestHumanVeto` stops being a valid expression and this test stops
+/// compiling, which is the enforcement mechanism.
+#[test]
+fn test_a8_veto_request_carries_no_agent_supplied_data() {
+    let request = Event::RequestHumanVeto;
+    assert_eq!(request, Event::RequestHumanVeto, "one inhabitant, no variation");
+
+    // Two agents in very different epistemic positions send the identical request.
+    let mut positions = Vec::new();
+    for score in [5u64, 95] {
+        let s = fresh_with_threshold(100);
+        let (_, s) = s.step(Event::MissionInit);
+        let (_, s) = s.step(Event::Infer {
+            declared_secs: 1,
+            disclosure_bits: 1,
+            uncertainty_score: score,
+        });
+
+        let (d, after) = s.step(request);
+        assert!(d.is_admitted(), "a stuck agent may always ask");
+        assert_eq!(
+            after, s,
+            "the request must change nothing, so it cannot buy the agent anything"
+        );
+        positions.push(s);
+    }
+
+    // What the operator sees differs, but only because the agent's *situation*
+    // differs. Nothing travelled with the request itself.
+    assert_ne!(
+        positions[0].uncertainty_incurred, positions[1].uncertainty_incurred,
+        "the two positions must genuinely differ, or this test proves nothing"
+    );
+    assert_eq!(event_code(&request), 6, "the code is the whole of the message");
+}
+
+/// The operator's view is derived from the monitor, so it is the same whichever
+/// agent is asking and whatever that agent would prefer the answer to be.
+#[test]
+fn test_a8_operator_reads_monitor_state_not_agent_claims() {
+    let (s, grants) = state_and_grants(100, &[10]);
+    let (_, s) = s.step(Event::MissionInit);
+    let (_, s) = s.step(Event::Infer {
+        declared_secs: 1,
+        disclosure_bits: 1,
+        uncertainty_score: 100,
+    });
+
+    // The figures an operator would consult before deciding whether to correct.
+    let before = (
+        s.uncertainty_incurred,
+        s.uncertainty_resolved,
+        s.peak_uncertainty,
+        s.autonomy_threshold,
+        s.corrections_consumed,
+    );
+
+    // The agent asks, repeatedly. None of it moves the numbers.
+    for _ in 0..5 {
+        let (d, after) = s.step(Event::RequestHumanVeto);
+        assert!(d.is_admitted());
+        assert_eq!(
+            (
+                after.uncertainty_incurred,
+                after.uncertainty_resolved,
+                after.peak_uncertainty,
+                after.autonomy_threshold,
+                after.corrections_consumed,
+            ),
+            before,
+            "asking must not alter the evidence the operator decides on"
+        );
+    }
+
+    // Only the operator's own grant changes anything.
+    let (d, after) = s.step(Event::HumanCorrection { grant: grants[0] });
+    assert!(d.is_admitted());
+    assert_eq!(after.uncertainty_resolved, 10);
 }
