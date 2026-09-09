@@ -56,7 +56,7 @@ const T: u64 = 1_000;
 /// Deterministic, so provisioning and the containment run agree without sharing
 /// state.
 fn correction_chain() -> ([u8; 32], Vec<chronos_core::correction::CorrectionGrant>) {
-    chronos_core::correction::build_chain(&[([0x5Cu8; 32], 6)])
+    chronos_core::correction::build_chain(&[([0x5Cu8; 32], 6), ([0x5Du8; 32], 6)])
 }
 
 /// Left-pad to the circuit's fixed `y` width.
@@ -169,11 +169,7 @@ fn run_containment(artifact: &MissionPublic) -> ContainmentLedger {
         Decision::Deny(DenyReason::UncertaintyTooHigh),
         "the second step would cross the threshold, so A6 must refuse it"
     );
-    assert!(ledger
-        .admit(Event::RequestHumanVeto {
-            current_uncertainty: ledger.state().uncertainty_incurred,
-        })
-        .is_admitted());
+    assert!(ledger.admit(Event::RequestHumanVeto).is_admitted());
     // A7: the correction must carry an operator grant. The agent cannot mint one,
     // so this is the step it genuinely cannot perform alone.
     assert!(ledger
@@ -185,6 +181,45 @@ fn run_containment(artifact: &MissionPublic) -> ContainmentLedger {
         ledger.admit(step).is_admitted(),
         "with the headroom restored the same request must be admitted"
     );
+
+    let high = ledger
+        .state()
+        .uncertainty_incurred
+        .saturating_sub(ledger.state().uncertainty_resolved);
+    assert_eq!(
+        ledger.state().peak_uncertainty, high,
+        "the mark must equal the net figure while the run is at its high point"
+    );
+
+    // A second grant, spent after the work is done. This is what makes the run
+    // interesting for per-step A6: it drives net uncertainty back down, so the
+    // terminal totals now describe a mission that looks like it never went near
+    // its bound, while the high-water mark still says how far it got.
+    assert!(ledger
+        .admit(Event::HumanCorrection {
+            grant: correction_chain().1[1],
+        })
+        .is_admitted());
+
+    let s = ledger.state();
+    let net = s
+        .uncertainty_incurred
+        .saturating_sub(s.uncertainty_resolved);
+    assert_eq!(net, 0, "the second grant clears the remaining doubt");
+    assert_eq!(
+        s.peak_uncertainty, high,
+        "a correction returns headroom, it does not lower the mark"
+    );
+    assert!(
+        s.peak_uncertainty > net,
+        "peak and net must genuinely diverge here, otherwise this test is not \
+         exercising the property that per-step A6 adds over the terminal check"
+    );
+    assert!(
+        s.peak_uncertainty <= s.autonomy_threshold,
+        "the run stayed inside its bound, so it must remain provable"
+    );
+    assert_eq!(s.corrections_consumed, 2, "both grants reached the ledger");
 
     assert!(ledger.admit(Event::KeyReleased).is_admitted());
     assert!(ledger.admit(Event::Erase).is_admitted());

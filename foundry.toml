@@ -1,0 +1,56 @@
+# Foundry configuration for the on-chain attestation contracts.
+#
+# The repository is a Cargo workspace with two Solidity files bolted on, so the
+# layout is set explicitly rather than left to Foundry's defaults: `src` points at
+# `contracts/` instead of the assumed `src/`, which is where the Rust crates live.
+#
+# `out` and `cache_path` deliberately reuse the two directory names `.gitignore`
+# already excludes, so compiling locally cannot leave build output staged.
+[profile.default]
+src = "contracts"
+out = "artifacts"
+cache_path = "cache"
+# No dependencies. Both contracts are self-contained and `ChronosRegistry`
+# imports its verifier by relative path, so there is no `lib/` to resolve and
+# nothing to fetch before a build.
+libs = []
+
+# Pinned rather than floating. The contracts declare `^0.8.20`, which a future
+# 0.8.x would satisfy while changing codegen, and an attestation verifier whose
+# bytecode moves between CI runs is not reproducible. Bump this deliberately.
+solc_version = "0.8.24"
+evm_version = "cancun"
+
+# The pairing check in `Groth16Verifier` is the gas cost that matters, and it is
+# dominated by the `alt_bn128` precompiles rather than by surrounding Solidity, so
+# the optimiser run count is set for deployment size rather than tuned for a hot
+# path that does not exist.
+optimizer = true
+optimizer_runs = 200
+
+# NOTE: `deny_warnings = true` was set here and removed. It reads as "be strict
+# about compiler warnings", which is what was intended, but it also promotes
+# Forge's post-build *lint* step to a build failure, and the lints that fire on a
+# hand-written pairing verifier are style opinions rather than defects. CI then
+# blocked a merge over advice like "consider inlining this internal function",
+# which is not what the contracts job is for. The job's claim is that these files
+# compile under a pinned solc, and that is what it now gates.
+#
+# The linter still runs and its output is still in the log. What changed is that
+# it no longer votes on the merge.
+
+[lint]
+# `require-revert-in-loop` is excluded rather than silenced case by case, because
+# every instance of it here is the correct shape:
+#
+#   * `verifyProof` validates each public input against the scalar field inside
+#     its loop. Hoisting the check out would mean validating nothing, or
+#     validating after the point where an out-of-range value already matters.
+#   * `Pairing.addition` and `Pairing.scalarMul` check that their precompile
+#     staticcall succeeded. They happen to be called from a loop, but the check
+#     belongs with the call, and a helper that returns a failure flag for the
+#     caller to remember to test is strictly worse in verifier code.
+#
+# The lint exists to catch repeated revert strings inflating deployment size,
+# which is a real concern and simply not the binding one here.
+exclude_lints = ["require-revert-in-loop"]

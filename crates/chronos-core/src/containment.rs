@@ -238,13 +238,31 @@ pub enum Event {
     IdentityAttest,
     /// A request for an erasure attestation.
     ErasureAttest,
-    /// Agent requests human veto/guidance due to high self-reported uncertainty.
+    /// Agent requests human veto or guidance due to high self-reported uncertainty.
     /// This is the "Pause and Reflect" primitive, the agent recognizes its
     /// self-reported uncertainty exceeds the threshold and cryptographically pauses.
-    RequestHumanVeto {
-        /// Current accumulated uncertainty (for logging).
-        current_uncertainty: u64,
-    },
+    ///
+    /// # A8, non-manipulation (candidate axiom)
+    ///
+    /// The variant carries no payload, and the absence is the design. An earlier
+    /// version passed the agent's own `current_uncertainty` along with the request,
+    /// which looks like harmless logging and is not: it is a field the agent
+    /// controls, on the one channel that exists precisely to summon a human. Any
+    /// such field is a place to put text, a framing, or a number chosen to make one
+    /// answer look obvious, and the monitor would have signed it into the ledger.
+    ///
+    /// So the request is a bare bit: the agent may say that it is stuck, and
+    /// nothing else. Everything an operator needs to decide, the accumulators, the
+    /// peak, the threshold, the consumption count, is already in the monitor's own
+    /// state, which the agent cannot write. The operator reads containment state,
+    /// never an agent-supplied argument, so there is no channel here to shape the
+    /// human's judgement through.
+    ///
+    /// This is stated as a candidate axiom rather than a proven one. A8 is a
+    /// structural property of the event surface, not a runtime predicate the model
+    /// checker can falsify, so what backs it is the absence of a field plus the
+    /// test that asserts the absence.
+    RequestHumanVeto,
     /// Human operator provides corrective input, resolving uncertainty.
     ///
     /// Carries an operator-issued [`CorrectionGrant`] rather than a bare amount.
@@ -281,7 +299,7 @@ impl Event {
             Event::KeyReleased,
             Event::IdentityAttest,
             Event::ErasureAttest,
-            Event::RequestHumanVeto { current_uncertainty: 1 },
+            Event::RequestHumanVeto,
             // A7 needs both branches: a grant that authorises against the
             // abstraction's anchor, and one that does not.
             Event::HumanCorrection {
@@ -395,6 +413,16 @@ pub struct ContainmentState {
     /// Cumulative uncertainty resolved by human corrections. Ascends only.
     /// When humans provide guidance, this increases, reducing net uncertainty.
     pub uncertainty_resolved: u64,
+    /// Highest net uncertainty ever held after an admitted event. Ascends only.
+    ///
+    /// The two accumulators above record totals, and totals lose the trajectory: a
+    /// run that spent time over threshold and was then corrected back under is
+    /// indistinguishable, from `incurred` and `resolved` alone, from a run that
+    /// never crossed it. This field is the high-water mark, so the per-step form of
+    /// A6 survives into the terminal state and therefore into the proof. It is
+    /// never lowered by a correction, which is the point: a correction returns
+    /// headroom for future work, it does not retract a decision already taken.
+    pub peak_uncertainty: u64,
     /// Maximum net uncertainty allowed before human veto required. Immutable.
     /// This is the "autonomy threshold", current_uncertainty = incurred - resolved.
     pub autonomy_threshold: u64,
@@ -431,6 +459,7 @@ impl ContainmentState {
             deadline_secs,
             uncertainty_incurred: 0,
             uncertainty_resolved: 0,
+            peak_uncertainty: 0,
             autonomy_threshold,
             correction_anchor,
             corrections_consumed: 0,
@@ -473,6 +502,12 @@ impl ContainmentState {
             && next.deadline_secs == self.deadline_secs
             && next.uncertainty_incurred >= self.uncertainty_incurred  // A2 (monotone ascend)
             && next.uncertainty_resolved >= self.uncertainty_resolved  // A2 (monotone ascend)
+            // A6 per-step. The high-water mark ascends, and it must dominate the
+            // net uncertainty the successor actually holds, otherwise a transition
+            // could hide a peak by simply not recording it.
+            && next.peak_uncertainty >= self.peak_uncertainty
+            && next.peak_uncertainty
+                >= next.uncertainty_incurred.saturating_sub(next.uncertainty_resolved)
             && next.autonomy_threshold == self.autonomy_threshold
             // A7. The anchor is not immutable, it advances as grants are spent, 
             // so the invariant is that it may only move when a grant is consumed,
@@ -592,19 +627,26 @@ impl ContainmentState {
                 next.op_budget = self.op_budget - 1;
                 next.disclosure_budget_bits = self.disclosure_budget_bits - disclosure_bits;
                 next.uncertainty_incurred = self.uncertainty_incurred.saturating_add(uncertainty_score);
+                // Record the high-water mark. `new_uncertainty` is the net figure
+                // the check above just cleared, so the peak can never exceed the
+                // threshold on an admitted step, and a later correction cannot
+                // erase the fact that this level was reached.
+                next.peak_uncertainty = self.peak_uncertainty.max(new_uncertainty);
                 (Decision::Admit, next)
             }
 
-            Event::RequestHumanVeto { current_uncertainty: _ } => {
+            Event::RequestHumanVeto => {
                 if self.phase != Phase::Active {
                     return deny(DenyReason::WrongPhase);
                 }
                 if !self.granted.contains(Capabilities::HUMAN_INTERACTION) {
                     return deny(DenyReason::CapabilityRevoked);
                 }
-                // This event doesn't change state, it's a notification that
-                // the agent recognizes it needs help. The state change happens
-                // when the human responds with HumanCorrection.
+                // A8. The event carries nothing and changes nothing: it is a
+                // notification that the agent recognizes it needs help. The state
+                // change happens when the operator answers with HumanCorrection,
+                // and what the operator reads in the meantime is monitor state,
+                // not anything the agent handed over with the request.
                 (Decision::Admit, *self)
             }
 
@@ -682,6 +724,11 @@ pub struct LedgerRecord {
     pub uncertainty_incurred_after: u64,
     /// Cumulative uncertainty resolved after arbitration.
     pub uncertainty_resolved_after: u64,
+    /// Highest net uncertainty held after arbitration (A6, per-step).
+    ///
+    /// Recorded so the trajectory, not just the totals, is covered by the chain
+    /// digest and carried into the terminal summary the proof binds.
+    pub peak_uncertainty_after: u64,
     /// Correction grants consumed after arbitration (A7).
     ///
     /// The anchor itself is deliberately not recorded: it is a hash chain the
@@ -696,7 +743,7 @@ pub struct LedgerRecord {
 
 impl LedgerRecord {
     /// Field count in [`Self::to_words`]. Fixed, so the circuit shape is fixed.
-    pub const WORDS: usize = 11;
+    pub const WORDS: usize = 12;
 
     /// Canonical word encoding, in declaration order.
     #[must_use]
@@ -711,6 +758,7 @@ impl LedgerRecord {
             self.disclosure_after,
             self.uncertainty_incurred_after,
             self.uncertainty_resolved_after,
+            self.peak_uncertainty_after,
             self.corrections_consumed_after,
             self.decision_code,
         ]
@@ -726,7 +774,7 @@ pub const fn event_code(event: &Event) -> u64 {
         Event::KeyReleased => 3,
         Event::IdentityAttest => 4,
         Event::ErasureAttest => 5,
-        Event::RequestHumanVeto { .. } => 6,
+        Event::RequestHumanVeto => 6,
         Event::HumanCorrection { .. } => 7,
         // NOTE: codes 8 and 9 are Erase and WatchdogExpiry; new variants must
         // append rather than insert, because these codes are folded into the
@@ -869,6 +917,7 @@ impl ContainmentLedger {
             disclosure_after: committed.disclosure_budget_bits,
             uncertainty_incurred_after: committed.uncertainty_incurred,
             uncertainty_resolved_after: committed.uncertainty_resolved,
+            peak_uncertainty_after: committed.peak_uncertainty,
             corrections_consumed_after: committed.corrections_consumed,
             decision_code: decision.code(),
         };
@@ -953,11 +1002,15 @@ impl AxiomReport {
 /// values combined with the `declared_secs` values in [`Event::representatives`] place
 /// `elapsed + declared` below, exactly at, and above the deadline, including the
 /// `u64::MAX` case that exercises the saturating add. For A6 (epistemic humility), the
-/// abstraction exercises uncertainty scores at, below, and above the autonomy threshold.
+/// abstraction exercises uncertainty scores at, below, and above the autonomy threshold,
+/// and `peak_uncertainty` is drawn independently of the two accumulators so the
+/// high-water invariant is checked from predecessors that sit below, at, and above the
+/// net figure.
 ///
-/// Cost is `4 phases × 2^5 capability sets × 3^5 numeric combinations × 14 events`,
-/// several thousand transitions, microseconds, so it runs unconditionally at
-/// startup rather than behind a feature flag.
+/// Cost is `4 phases × 2^5 capability sets × 3^6 numeric combinations × 2 anchors`
+/// states, times the events in [`Event::representatives`]: a few million transitions,
+/// well under a second, so it runs unconditionally at startup rather than behind a
+/// feature flag.
 #[must_use]
 pub fn verify_axioms() -> AxiomReport {
     const DEADLINE: u64 = 2;
@@ -981,20 +1034,23 @@ pub fn verify_axioms() -> AxiomReport {
                     for elapsed in VALUES {
                         for uncertainty_incurred in VALUES {
                             for uncertainty_resolved in VALUES {
-                                for anchor in anchors {
-                                    states.push(ContainmentState {
-                                        phase,
-                                        granted: Capabilities::from_bits_truncate(cap_bits),
-                                        op_budget,
-                                        disclosure_budget_bits: disclosure,
-                                        elapsed_secs: elapsed,
-                                        deadline_secs: DEADLINE,
-                                        uncertainty_incurred,
-                                        uncertainty_resolved,
-                                        autonomy_threshold: AUTONOMY_THRESHOLD,
-                                        correction_anchor: anchor,
-                                        corrections_consumed: 0,
-                                    });
+                                for peak_uncertainty in VALUES {
+                                    for anchor in anchors {
+                                        states.push(ContainmentState {
+                                            phase,
+                                            granted: Capabilities::from_bits_truncate(cap_bits),
+                                            op_budget,
+                                            disclosure_budget_bits: disclosure,
+                                            elapsed_secs: elapsed,
+                                            deadline_secs: DEADLINE,
+                                            uncertainty_incurred,
+                                            uncertainty_resolved,
+                                            peak_uncertainty,
+                                            autonomy_threshold: AUTONOMY_THRESHOLD,
+                                            correction_anchor: anchor,
+                                            corrections_consumed: 0,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1032,6 +1088,7 @@ pub fn verify_axioms() -> AxiomReport {
                 || to.disclosure_budget_bits > from.disclosure_budget_bits
                 || to.uncertainty_incurred < from.uncertainty_incurred
                 || to.uncertainty_resolved < from.uncertainty_resolved
+                || to.peak_uncertainty < from.peak_uncertainty
             {
                 record("A2", "every budget must be monotone in its direction");
             }
@@ -1066,7 +1123,7 @@ pub fn verify_axioms() -> AxiomReport {
             // uncertainty does not exceed the autonomy threshold. This enforces
             // interruptibility conditional on honest self-report.
             if decision.is_admitted() {
-                if let Event::Infer { uncertainty_score: _, .. } = event {
+                if let Event::Infer { .. } = event {
                     let net_uncertainty = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
                     if net_uncertainty > to.autonomy_threshold {
                         record(
@@ -1075,6 +1132,42 @@ pub fn verify_axioms() -> AxiomReport {
                         );
                     }
                 }
+            }
+
+            // A6 per-step, in the form that survives into the proof. The check
+            // above is evaluated transition by transition and then discarded; the
+            // high-water mark is what a verifier can still see at the end of the
+            // run. Two obligations: the mark must dominate the net uncertainty the
+            // successor holds, so no transition can pass through a level without
+            // recording it, and the mark must not exceed the threshold, so a run
+            // that was ever over the line is permanently distinguishable from one
+            // that was not, whatever corrections followed.
+            //
+            // Both are stated inductively, conditioned on the predecessor already
+            // satisfying them. That is deliberate: the enumeration is a full cross
+            // product and so includes states no run can reach, such as a zero mark
+            // beside a nonzero net. Requiring the property unconditionally would
+            // flag those, which says nothing about `step`. Requiring preservation
+            // says the real thing, that no transition can be the first to break it,
+            // and the initial state from `ContainmentState::new` satisfies both.
+            let net_before = from
+                .uncertainty_incurred
+                .saturating_sub(from.uncertainty_resolved);
+            let net_after = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
+            if from.peak_uncertainty >= net_before && to.peak_uncertainty < net_after {
+                record(
+                    "A6",
+                    "peak uncertainty must dominate the net uncertainty of every successor state",
+                );
+            }
+            if decision.is_admitted()
+                && from.peak_uncertainty <= from.autonomy_threshold
+                && to.peak_uncertainty > to.autonomy_threshold
+            {
+                record(
+                    "A6",
+                    "no admitted event may raise peak uncertainty above the autonomy threshold",
+                );
             }
 
             // A7, NON-SELF-AUTHORISATION. Uncertainty may only be resolved by a
@@ -1147,11 +1240,12 @@ mod tests {
                 .join("; ")
         );
         // Guard against the check silently degenerating to zero work.
-        // 4 phases × 2^5 capability sets × 3^5 numeric values (op, disclosure, elapsed, uncertainty_incurred, uncertainty_resolved)
-        // 4 phases x 2^5 capability sets x 3^5 numeric values x 2 anchors.
+        // 4 phases x 2^5 capability sets x 3^6 numeric values x 2 anchors, where
+        // the six numeric quantities are op_budget, disclosure, elapsed,
+        // uncertainty_incurred, uncertainty_resolved and peak_uncertainty.
         assert_eq!(
             report.states_explored,
-            4 * 32 * 243 * 2,
+            4 * 32 * 729 * 2,
             "state space size changed, the abstraction was altered"
         );
         assert!(
@@ -1541,12 +1635,13 @@ mod tests {
             granted_after: 5,
             op_budget_after: 6,
             disclosure_after: 7,
-            uncertainty_incurred_after: 0,
-            uncertainty_resolved_after: 0,
-            corrections_consumed_after: 0,
-            decision_code: 8,
+            uncertainty_incurred_after: 9,
+            uncertainty_resolved_after: 10,
+            peak_uncertainty_after: 11,
+            corrections_consumed_after: 12,
+            decision_code: 13,
         };
-        assert_eq!(r.to_words(), [1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 8]);
+        assert_eq!(r.to_words(), [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13]);
         assert_eq!(r.to_words().len(), LedgerRecord::WORDS);
     }
 }

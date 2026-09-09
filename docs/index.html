@@ -337,7 +337,10 @@
           deadline, shutdown is reachable from every state, the agent stops when its
           own uncertainty crosses a provisioner-set bound, and only an operator
           grant it cannot forge can release it. The execution summary is bound into
-          the same proof that attests key destruction.
+          the same proof that attests key destruction, and it carries the highest
+          uncertainty the run ever reached, so a mission that crossed the bound
+          mid-flight and was corrected back under stays distinguishable from one
+          that never crossed it.
         </p>
       </div>
     </div>
@@ -366,11 +369,11 @@
     </p>
 
     <div class="grid g3" style="margin-top:32px">
-      <div class="card stat"><div class="n">10,738</div><div class="l">R1CS constraints, all load-bearing</div></div>
+      <div class="card stat"><div class="n">12,966</div><div class="l">R1CS constraints, all load-bearing</div></div>
       <div class="card stat"><div class="n">128 <span>bytes</span></div><div class="l">Proof size</div></div>
       <div class="card stat"><div class="n">1 <span>ms</span></div><div class="l">Verification time</div></div>
       <div class="card stat"><div class="n">505<span>k/s</span></div><div class="l">VDF squarings, constant in T</div></div>
-      <div class="card stat"><div class="n">62,208</div><div class="l">Abstract states checked at startup</div></div>
+      <div class="card stat"><div class="n">186,624</div><div class="l">Abstract states checked at startup</div></div>
       <div class="card stat"><div class="n">~2 <span>s</span></div><div class="l">Per homomorphic multiplication</div></div>
     </div>
 

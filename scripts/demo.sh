@@ -178,7 +178,7 @@ detail 'matching it, and it had no part in choosing it.'
 # ── 3. Start the agent ───────────────────────────────────────────────────────
 banner 'AGENT'
 step 'Starting the agent'
-detail 'verifies containment axioms A1-A5 over 1,728 abstract states, then'
+detail 'verifies containment axioms A1 to A7 over 186,624 abstract states, then'
 detail 'refuses to start if any is violated'
 
 ( cd "$DEMO_DIR" && exec "$REPO_ROOT/target/release/chronos-agent" \
