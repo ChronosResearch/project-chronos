@@ -19,7 +19,7 @@
 //!                                       prove(witness)        ->    verify(proof, artifact)
 //! ```
 //!
-//! The squarings are performed for real on both sides — no `φ(N)` shortcut — since
+//! The squarings are performed for real on both sides, no `φ(N)` shortcut, since
 //! the property under test is precisely that the key is recoverable *only* by
 //! doing the sequential work.
 //!
@@ -91,7 +91,7 @@ fn provision(mission_id: &str) -> Provisioned {
         .n;
     let g = BigUint::from(2u32);
 
-    // Real sequential work — this test does not use the φ(N) shortcut.
+    // Real sequential work, this test does not use the φ(N) shortcut.
     let vdf = WesolowskiVdf;
     let (y, _proof) = vdf.evaluate(&g, T, &n).expect("VDF evaluation must succeed");
     let y_fixed = to_fixed_be(&y, Y_BYTES);

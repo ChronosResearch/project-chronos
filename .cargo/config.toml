@@ -1,4 +1,4 @@
-# .cargo/config.toml — CHRONOS workspace cargo configuration
+# .cargo/config.toml, CHRONOS workspace cargo configuration
 
 [alias]
 # STEP 22: Cargo audit alias so `cargo security` runs the full suite.

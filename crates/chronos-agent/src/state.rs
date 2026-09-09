@@ -3,7 +3,7 @@
 //! # Why the ledger is the state machine
 //!
 //! The previous design kept two independent notions of lifecycle: an `AgentState`
-//! enum inside `StateMachine`, and — once containment was introduced — a
+//! enum inside `StateMachine`, and, once containment was introduced, a
 //! [`Phase`] inside the containment monitor. Two sources of truth for the same
 //! fact can diverge, and here divergence would be load-bearing: the erasure proof
 //! commits to the *ledger's* terminal state, so an agent whose HTTP layer said
@@ -181,7 +181,7 @@ impl StateMachine {
 
     /// Force `Erased` from any state, wiping identity material.
     ///
-    /// Always succeeds — [`Event::Erase`] is unconditionally admissible, which is
+    /// Always succeeds, [`Event::Erase`] is unconditionally admissible, which is
     /// what makes containment axiom A5 (erasure liveness) hold.
     pub async fn force_erased(&self) {
         let decision = self.admit(Event::Erase).await;
@@ -239,7 +239,7 @@ impl StateMachine {
 
     /// Record that the agent is pausing itself pending human guidance (A6).
     ///
-    /// This changes no budget and no capability — it exists so the pause is
+    /// This changes no budget and no capability, it exists so the pause is
     /// *visible* in the ledger, and therefore in the erasure proof, rather than
     /// being an invisible stall. `current_uncertainty` is read from the monitor
     /// rather than accepted from the caller, so the recorded value is the one the
@@ -276,7 +276,7 @@ impl StateMachine {
     /// falls, and it requires a grant from the provisioner's chain: the monitor
     /// checks the grant against the current anchor, and producing a grant needs a
     /// preimage the agent does not hold. That is what stops the agent resolving its
-    /// own doubt — the HTTP MAC authenticates the *caller*, while the grant
+    /// own doubt, the HTTP MAC authenticates the *caller*, while the grant
     /// authorises the *correction*, and A7 needs the second.
     ///
     /// # Errors
@@ -347,7 +347,7 @@ pub fn spawn_watchdog(sm: Arc<StateMachine>, t_seconds: u64) {
                         target: "chronos",
                         elapsed_secs = elapsed,
                         limit_secs = t_seconds,
-                        "watchdog deadline reached — aborting sequential work and erasing"
+                        "watchdog deadline reached, aborting sequential work and erasing"
                     );
                     // Order matters: stop the work before declaring erasure, so
                     // the claim is true at the moment it is made. `force_erased`
@@ -578,7 +578,7 @@ mod tests {
         assert!(s.admit(step).await.is_admitted(), "the first step fits under the threshold");
         assert_eq!(s.uncertainty().await.current, 6);
 
-        // 6 + 6 > 10 — this is where the agent has to stop.
+        // 6 + 6 > 10, this is where the agent has to stop.
         assert!(
             matches!(
                 s.admit(step).await,

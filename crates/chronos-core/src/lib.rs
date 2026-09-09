@@ -21,7 +21,7 @@ pub use error::{ChronosError, ChronosResult};
 
 use num_bigint::BigUint;
 
-/// Output of a VDF evaluation — the proof `π` in Wesolowski's scheme.
+/// Output of a VDF evaluation, the proof `π` in Wesolowski's scheme.
 #[derive(Clone, Debug)]
 pub struct VdfProof {
     /// The Wesolowski proof element `π` (a BigUint in the RSA group).

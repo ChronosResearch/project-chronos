@@ -1,4 +1,4 @@
-//! Operator correction grants — unforgeable, single-use, amount-bound.
+//! Operator correction grants, unforgeable, single-use, amount-bound.
 //!
 //! # The hole this closes
 //!
@@ -65,7 +65,7 @@
 //! outside anything cryptography can see.
 //!
 //! It also inherits `F_HONEST-UNCERTAINTY`: a correction is authorised against a
-//! *self-reported* uncertainty figure. Closing that is a separate problem — it
+//! *self-reported* uncertainty figure. Closing that is a separate problem, it
 //! requires moving the uncertainty estimator itself across the trust boundary.
 
 use sha2::{Digest, Sha256};
@@ -139,7 +139,7 @@ pub fn link(token: &[u8; 32], amount: u64, next_anchor: &[u8; 32]) -> [u8; 32] {
 /// revealed. This is a provisioner-side helper: the agent never calls it, because
 /// calling it is precisely the capability the agent must not have.
 ///
-/// An empty input yields [`CHAIN_END`] and no grants — a mission in which no
+/// An empty input yields [`CHAIN_END`] and no grants, a mission in which no
 /// correction is ever authorised, so the agent must halt at the threshold rather
 /// than resolve its way past it.
 #[must_use]

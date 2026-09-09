@@ -62,7 +62,7 @@ mod tests {
             let byte = unsafe { std::ptr::read_volatile(ptr.add(i)) };
             assert_eq!(
                 byte, 0xFF,
-                "Byte {i} was {byte:#04x} — compiler may have optimized the wipe!"
+                "Byte {i} was {byte:#04x}, compiler may have optimized the wipe!"
             );
         }
     }

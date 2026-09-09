@@ -9,7 +9,7 @@ use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheInt64, ServerKey};
 /// `bincode` reads a length prefix before allocating. On attacker-controlled
 /// input that is an allocation primitive, so the payload is size-checked before
 /// deserialization is attempted. This is a floor, not a substitute for
-/// `tfhe::safe_serialization` — see [`FheEngine::evaluate_ciphertext`].
+/// `tfhe::safe_serialization`, see [`FheEngine::evaluate_ciphertext`].
 const MAX_CIPHERTEXT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Assumed bound on `|input|` when validating a model for overflow.
@@ -29,7 +29,7 @@ const DEFAULT_INPUT_ABS_MAX: i64 = 255;
 /// can update it atomically.
 pub struct FheEngine {
     server_key: Arc<RwLock<Option<ServerKey>>>,
-    /// Cleartext model weights. Not secret — FHE protects the inputs, not the
+    /// Cleartext model weights. Not secret, FHE protects the inputs, not the
     /// model. Separate from the key so a model can be swapped without a new
     /// mission.
     weights: RwLock<Option<MlpWeights>>,
@@ -66,7 +66,7 @@ impl FheEngine {
             *guard = Some(server_key);
         }
 
-        // Drop the client key immediately — it must never hit disk.
+        // Drop the client key immediately, it must never hit disk.
         drop(client_key);
 
         Ok(())
@@ -98,7 +98,7 @@ impl FheEngine {
     /// `ct` is `bincode`-serialized `Vec<FheInt64>`, one ciphertext per input
     /// feature. Returns `bincode`-serialized `FheInt64`, the single output.
     ///
-    /// # Untrusted input — known gap
+    /// # Untrusted input, known gap
     /// `ct` arrives from `/infer`, i.e. from the network. The payload is length-
     /// capped at [`MAX_CIPHERTEXT_PAYLOAD_BYTES`] before deserialization, which
     /// blocks the crudest allocation attack, but `bincode::deserialize` is still
@@ -126,7 +126,7 @@ impl FheEngine {
             })?;
             if guard.is_none() {
                 return Err(ChronosError::Fhe(
-                    "ServerKey not installed — call generate_and_install_keys first".into(),
+                    "ServerKey not installed, call generate_and_install_keys first".into(),
                 ));
             }
         }
@@ -136,7 +136,7 @@ impl FheEngine {
             .read()
             .map_err(|_| ChronosError::Fhe("weights RwLock poisoned".into()))?;
         let weights = weights_guard.as_ref().ok_or_else(|| {
-            ChronosError::Fhe("model weights not installed — call install_weights first".into())
+            ChronosError::Fhe("model weights not installed, call install_weights first".into())
         })?;
 
         let inputs: Vec<FheInt64> = bincode::deserialize(ct).map_err(|e| {

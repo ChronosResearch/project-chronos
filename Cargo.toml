@@ -37,7 +37,7 @@ ark-serialize            = "0.4.2"
 # Curve/group traits (AffineRepr, CurveGroup) used by the EVM export path.
 ark-ec                   = "0.4.0"
 
-# ── GMP (optional, x86_64 only — chronos-vdf uses pure-Rust num-bigint fallback) ──
+# ── GMP (optional, x86_64 only, chronos-vdf uses pure-Rust num-bigint fallback) ──
 # gmp-mpfr-sys = "1.7.1"
 
 # ── Async & HTTP API ──────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ num-traits = "0.2.19"
 serde      = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
 # Wire format for FHE ciphertext payloads on /infer.
-# NOTE: pinned to 1.x — the 2.x API is incompatible with the
+# NOTE: pinned to 1.x, the 2.x API is incompatible with the
 # `serialize`/`deserialize` calls in chronos-core::fhe.
 bincode    = "1.3.3"
 aes-gcm    = "0.10.3"

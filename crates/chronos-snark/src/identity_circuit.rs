@@ -1,4 +1,4 @@
-//! EAIP identity circuit — a genuine zero-knowledge proof of time-locked identity.
+//! EAIP identity circuit, a genuine zero-knowledge proof of time-locked identity.
 //!
 //! # What EAIP claims, and what the circuit now actually enforces
 //!
@@ -18,8 +18,8 @@
 //! and never constrained them equal, so *neither* public input was bound to
 //! anything at all.
 //!
-//! The second removed the filler and enforced one honest constraint —
-//! `mission_id_bytes[0] == mid_pub` — which compares one byte of a public value
+//! The second removed the filler and enforced one honest constraint, 
+//! `mission_id_bytes[0] == mid_pub`, which compares one byte of a public value
 //! with itself. The `y` witness was allocated and then discarded with
 //! `let _ = (&y_vars, root_pub);`. The module documentation said so plainly, which
 //! was the right thing to do, but it meant EAIP's headline property was
@@ -61,7 +61,7 @@
 //!
 //! Groth16 is zero-knowledge, so the proof reveals nothing about `y` beyond the
 //! truth of the statement. It does *not* hide the identity root, the mission ID,
-//! or the fact that a proof was produced — those are public by design.
+//! or the fact that a proof was produced, those are public by design.
 
 use ark_bn254::{Bn254, Fr};
 use ark_crypto_primitives::snark::SNARK;
@@ -299,7 +299,7 @@ impl IdentityProver {
         mission_digest: &[u8; MISSION_BYTES],
     ) -> ChronosResult<Vec<u8>> {
         let pk = self.pk.as_ref().ok_or_else(|| {
-            ChronosError::Snark("identity proving key not loaded — run setup first".into())
+            ChronosError::Snark("identity proving key not loaded, run setup first".into())
         })?;
         let circuit = IdentityCircuit::new_for_proving(y, *mission_digest)?;
         let mut rng = StdRng::from_entropy();
@@ -376,7 +376,7 @@ mod tests {
 
         // Synthesize with a different y but assert the original root. Because the
         // root is derived from the witness inside `generate_constraints`, we test
-        // the binding at the proof level instead — see
+        // the binding at the proof level instead, see
         // `test_proof_does_not_verify_against_another_root`. Here we confirm the
         // root is a function of every byte of y.
         for idx in [0usize, 1, 127, Y_BYTES - 1] {

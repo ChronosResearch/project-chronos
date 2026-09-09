@@ -353,7 +353,7 @@ impl Phase1Contribution {
         let rhs = Bn254::pairing(new.tau_powers_g1[1], previous.tau_powers_g2[0]);
         if lhs != rhs {
             return Err(ChronosError::Ceremony(
-                "phase 1 pairing check failed — contribution did not preserve tau structure".into(),
+                "phase 1 pairing check failed, contribution did not preserve tau structure".into(),
             ));
         }
 

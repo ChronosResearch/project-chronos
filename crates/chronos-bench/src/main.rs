@@ -13,7 +13,7 @@
 //!
 //! Wall time must grow close to linearly in `T`, leaving squarings/sec roughly
 //! constant. If it does not, the measurement is dominated by something other than
-//! sequential squaring — which is exactly what happened to the figures published in
+//! sequential squaring, which is exactly what happened to the figures published in
 //! the v3 paper.
 //!
 //! Those figures (T=1,000 → 12,092 ms; T=10,000 → 16,595 ms; T=100,000 → 9,828 ms)
@@ -24,8 +24,8 @@
 //! `chronos-vdf`'s `test_wall_time_scales_with_t` fails if evaluation ever becomes
 //! constant-time in `T` again.
 //!
-//! Note that `evaluate` performs `2T` squarings — `T` for `y`, `T` for the
-//! Wesolowski proof — so the squarings/sec column reports `2T / elapsed`.
+//! Note that `evaluate` performs `2T` squarings, `T` for `y`, `T` for the
+//! Wesolowski proof, so the squarings/sec column reports `2T / elapsed`.
 //!
 //! # How to read the Groth16 rows
 //!
@@ -69,7 +69,7 @@ fn main() {
 // ─── VDF ──────────────────────────────────────────────────────────────────────
 
 fn bench_vdf() {
-    println!("## VDF — Wesolowski over RSA-2048");
+    println!("## VDF, Wesolowski over RSA-2048");
     println!(
         "{:<12} {:>14} {:>16} {:>12}",
         "T (steps)", "Wall (ms)", "Squarings/sec", "y[0..4]"
@@ -184,7 +184,7 @@ fn erasure_witness() -> ErasureWitness {
 fn bench_erasure_circuit() {
     use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
 
-    println!("## Groth16 erasure proof — BN254");
+    println!("## Groth16 erasure proof, BN254");
 
     let witness = erasure_witness();
     if let Err(e) = witness.check_shape() {
@@ -248,7 +248,7 @@ fn bench_erasure_circuit() {
 // ─── Identity circuit ─────────────────────────────────────────────────────────
 
 fn bench_identity_circuit() {
-    println!("## Groth16 EAIP identity proof — BN254");
+    println!("## Groth16 EAIP identity proof, BN254");
 
     let y: Vec<u8> = (0..Y_BYTES).map(|i| (i as u8).wrapping_mul(11)).collect();
     let mission = mission_id_to_bytes("bench-mission");
@@ -289,7 +289,7 @@ fn bench_identity_circuit() {
 // ─── Locked memory ────────────────────────────────────────────────────────────
 
 fn bench_locked_memory() {
-    println!("## LockedBytes — mlock and wipe overhead");
+    println!("## LockedBytes, mlock and wipe overhead");
     println!("{:<16} {:>14} {:>12}", "Size (bytes)", "Alloc+lock (us)", "mlock ok");
     println!("{}", "-".repeat(44));
 

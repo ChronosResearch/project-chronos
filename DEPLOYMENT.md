@@ -1,4 +1,4 @@
-# Deployment — CHRONOS Agent
+# Deployment, CHRONOS Agent
 
 ---
 
@@ -7,16 +7,16 @@
 | Component | Requirement |
 |-----------|-------------|
 | Rust toolchain | `stable` (1.97+) |
-| Linux capabilities | `CAP_IPC_LOCK` for `mlock()` — see §OS Capabilities |
+| Linux capabilities | `CAP_IPC_LOCK` for `mlock()`, see §OS Capabilities |
 | `ct_sk.bin` | AES-256-GCM encrypted secret key (nonce 12B \|\| ciphertext+tag) |
-| `certN.bin` | RSA modulus from MPC ceremony (big-endian bytes) — optional, falls back to RSA-2048 |
+| `certN.bin` | RSA modulus from MPC ceremony (big-endian bytes), optional, falls back to RSA-2048 |
 
 ---
 
 ## Build
 
 ```bash
-# Linux — fully static
+# Linux, fully static
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target=x86_64-unknown-linux-musl
 strip target/x86_64-unknown-linux-musl/release/chronos-agent
@@ -123,7 +123,7 @@ Override via env: `CHRONOS__SERVER__API_ADDR=0.0.0.0:8080`
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/status` | Current agent state (Armed/Active/Locked/Erased) |
-| `POST` | `/mission/init` | Start mission — triggers VDF, FHE keygen, EAIP init |
+| `POST` | `/mission/init` | Start mission, triggers VDF, FHE keygen, EAIP init |
 | `POST` | `/infer` | FHE inference on submitted ciphertext |
 | `POST` | `/verify` | Verify a Groth16 erasure proof (rate-limited) |
 | `GET` | `/identity/proof` | Return ZK identity proof + ML-DSA signature |
@@ -179,7 +179,7 @@ scrape_configs:
 
 ## Rollback
 
-1. `systemctl stop chronos` — SIGTERM triggers graceful shutdown; all secrets zeroized.
+1. `systemctl stop chronos`, SIGTERM triggers graceful shutdown; all secrets zeroized.
 2. Revert commit, rebuild, `systemctl start chronos`.
 3. Once `Erased`, the agent exits 0. Re-provision `certN.bin` and `ct_sk.bin` before a new run.
 

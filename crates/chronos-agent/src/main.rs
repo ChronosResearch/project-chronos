@@ -6,7 +6,7 @@
 //!
 //! 1. Load the published mission artifact, the sealed key, the salt, the modulus.
 //! 2. Generate FHE keys.
-//! 3. Evaluate the VDF — `T` sequential squarings, interruptible.
+//! 3. Evaluate the VDF, `T` sequential squarings, interruptible.
 //! 4. Verify the VDF proof natively in `O(log T)`.
 //! 5. Derive `K_enc` from `(y, salt)` and open the sealed key.
 //! 6. Check the opened key against the provisioner's `sk_commit`.
@@ -22,20 +22,20 @@
 //! dutifully attested that erased bytes were erased. Since the witness must now
 //! decrypt from the committed ciphertext and match `sk_commit`, the proof has to be
 //! produced while the genuine key is in hand, and the witness wiped immediately
-//! after. Proving after the wipe is no longer merely weak — it is impossible.
+//! after. Proving after the wipe is no longer merely weak, it is impossible.
 //!
 //! **The key lived in unlocked memory.** `sk_plaintext` was cloned into `sk_buf`
 //! and again into `m_pre`, three plain `Vec<u8>` copies of which exactly one was
 //! wiped. The other two dropped into the allocator intact and swappable, directly
 //! contradicting the `F_OS` axiom that Theorem 2 rests on. The key now lives in
-//! [`LockedBytes`] — `mlock`ed, triple-pass wiped on drop — and is never cloned.
+//! [`LockedBytes`], `mlock`ed, triple-pass wiped on drop, and is never cloned.
 //!
 //! **Decryption failure fell back to using the ciphertext as the key.** See
 //! [`crate::crypto`]. Now fatal.
 //!
 //! **The VDF ran four times over.** `evaluate` performs `2T` squarings (`T` for
 //! `y`, `T` for the proof), and the old loop then called `generate_identity_root`,
-//! which ran the entire VDF again — `4T` squarings for a `T`-step mission. EAIP now
+//! which ran the entire VDF again, `4T` squarings for a `T`-step mission. EAIP now
 //! derives its root from the `y` already computed.
 //!
 //! **The watchdog could not stop anything.** It set the state to `Erased` while the
@@ -43,7 +43,7 @@
 //! `evaluate_interruptible` against the state machine's abort flag.
 //!
 //! **The verifying key changed every mission.** Setup ran inside `/mission/init`,
-//! so no external party could ever check a proof — the agent was prover and sole
+//! so no external party could ever check a proof, the agent was prover and sole
 //! verifier, which is not attestation. The proving key is now a persisted artifact.
 //!
 //! # Security posture of the HTTP surface
@@ -54,8 +54,8 @@
 //! wired to the acceptor. Do not expose this to an untrusted network.
 
 // The binary consumes the library rather than re-declaring the modules with
-// `mod`. Declaring them in both places compiles every module twice — once into
-// the lib, once into the bin — which doubles build time and produces spurious
+// `mod`. Declaring them in both places compiles every module twice, once into
+// the lib, once into the bin, which doubles build time and produces spurious
 // dead-code warnings for items the binary happens not to call.
 use chronos_agent::{config, crypto, drand_client, metrics, state, tls};
 
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
             error!(target: "chronos", violation = %v, "containment axiom violated");
         }
         anyhow::bail!(
-            "containment axioms failed verification ({} violations over {} states) — refusing to start",
+            "containment axioms failed verification ({} violations over {} states), refusing to start",
             report.violations.len(),
             report.states_explored
         );
@@ -196,14 +196,14 @@ async fn main() -> Result<()> {
     } else {
         warn!(
             target: "chronos",
-            "request authentication DISABLED — permitted only because api_addr is loopback"
+            "request authentication DISABLED, permitted only because api_addr is loopback"
         );
         None
     };
 
     // A7: the correction anchor is refused rather than defaulted if malformed.
     // Defaulting would silently disable every correction the operator provisioned,
-    // which the agent would experience as "I can never be released" — a failure that
+    // which the agent would experience as "I can never be released", a failure that
     // looks like a policy decision rather than a config error.
     let correction_anchor = mission
         .correction_anchor_bytes()
@@ -240,9 +240,9 @@ async fn main() -> Result<()> {
     let shutdown_sm = Arc::clone(&sm);
     let shutdown = async move {
         if let Err(e) = wait_for_shutdown_signal().await {
-            error!(target: "chronos", error = %e, "signal handler failed — shutting down anyway");
+            error!(target: "chronos", error = %e, "signal handler failed, shutting down anyway");
         }
-        warn!(target: "chronos", "shutdown signal — erasing and exiting");
+        warn!(target: "chronos", "shutdown signal, erasing and exiting");
         shutdown_sm.force_erased().await;
     };
 
@@ -447,11 +447,11 @@ async fn init_handler(State(app): State<AppState>) -> Response {
 /// The protocol loop. Any failure erases.
 async fn run_mission(app: AppState) {
     if let Err(e) = run_mission_inner(&app).await {
-        error!(target: "chronos", error = %e, "mission failed — erasing");
+        error!(target: "chronos", error = %e, "mission failed, erasing");
         metrics::error_count().inc();
     }
     app.sm.force_erased().await;
-    info!(target: "chronos", "mission complete — agent erased");
+    info!(target: "chronos", "mission complete, agent erased");
 }
 
 async fn run_mission_inner(app: &AppState) -> Result<()> {
@@ -513,7 +513,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     // Wesolowski equation is checked here, cheaply, and the circuit only binds the
     // `y` that was checked.
     if !WesolowskiVdf.verify(&g, &y, &vdf_proof, t, &n) {
-        anyhow::bail!("VDF self-verification failed — refusing to proceed");
+        anyhow::bail!("VDF self-verification failed, refusing to proceed");
     }
     info!(target: "chronos", "VDF complete and self-verified");
 
@@ -524,7 +524,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     // ── 5. Open the sealed key into locked memory ────────────────────────────
     let k_enc = ChronosAead::derive_key(&y_bytes, &salt);
     let opened = ChronosAead::decrypt(&k_enc, &ct)
-        .context("sealed key failed to open — wrong VDF output, wrong salt, or tampered ct_sk")?;
+        .context("sealed key failed to open, wrong VDF output, wrong salt, or tampered ct_sk")?;
     let sk_bytes = poseidon::join32(&[opened[0], opened[1]])
         .context("opened plaintext is not a 32-byte key")?;
 
@@ -540,7 +540,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     );
     if observed != sk_commit {
         anyhow::bail!(
-            "opened key does not match the mission artifact's sk_commit — \
+            "opened key does not match the mission artifact's sk_commit, \
              the artifact and ct_sk.bin are from different provisioning runs"
         );
     }
@@ -563,7 +563,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
         .context("EAIP initialisation failed")?;
 
     // Prove identity now, while `y` is still available, and cache the proof.
-    // After erasure the witness is gone, so the proof cannot be regenerated —
+    // After erasure the witness is gone, so the proof cannot be regenerated, 
     // which is the intended behaviour, not a limitation.
     {
         let y_for_id = y_bytes.clone();
@@ -588,7 +588,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
             .verify_identity(&id_proof, root)
             .unwrap_or(false)
         {
-            anyhow::bail!("identity proof failed self-verification — refusing to publish it");
+            anyhow::bail!("identity proof failed self-verification, refusing to publish it");
         }
 
         *app.identity_prover.lock().await = Some(id_prover);
@@ -671,7 +671,7 @@ fn load_or_create_prover(path: &str) -> Result<Groth16Prover> {
     warn!(
         target: "chronos",
         %path,
-        "no proving key found — running a SINGLE-PARTY trusted setup. Whoever runs this holds \
+        "no proving key found, running a SINGLE-PARTY trusted setup. Whoever runs this holds \
          the trapdoor and can forge proofs under the resulting key. Replace with a real \
          multi-party ceremony before any deployment where the verifier does not trust this host."
     );
@@ -760,7 +760,7 @@ async fn infer_handler(State(app): State<AppState>, body: Bytes) -> Response {
 // the *correction itself*: the monitor checks it against the chain anchor the
 // provisioner published, and minting one requires a preimage the agent does not
 // hold. The MAC alone would be insufficient, because the agent runs the process that
-// verifies it — the grant is what the agent cannot fake.
+// verifies it, the grant is what the agent cannot fake.
 //
 // What neither buys: honesty of the uncertainty score the agent reports in the first
 // place. That is `F_HONEST-UNCERTAINTY`, see CORRIGIBILITY.md.
@@ -890,7 +890,7 @@ async fn verify_handler(State(app): State<AppState>, body: Bytes) -> Response {
     let Some(att) = guard.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json("no attestation yet — mission has not completed"),
+            Json("no attestation yet, mission has not completed"),
         )
             .into_response();
     };
@@ -941,7 +941,7 @@ async fn attestation_handler(State(app): State<AppState>) -> Response {
     let Some(att) = guard.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json("no attestation yet — mission has not completed"),
+            Json("no attestation yet, mission has not completed"),
         )
             .into_response();
     };
@@ -970,7 +970,7 @@ async fn attestation_handler(State(app): State<AppState>) -> Response {
                 "An accepted proof shows the prover knew the key that opens the committed \
                  ciphertext under a key derived from the committed VDF output, and that the \
                  containment monitor terminated erased with all capabilities revoked. It does \
-                 NOT show no copy of the key survives — that rests on the F_OS assumption. The \
+                 NOT show no copy of the key survives, that rests on the F_OS assumption. The \
                  trusted setup is single-party, so the setup operator can forge proofs."
                     .into(),
         }),
@@ -1003,7 +1003,7 @@ async fn identity_proof_handler(State(app): State<AppState>) -> Response {
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json("identity not established — mission has not reached the VDF output"),
+                Json("identity not established, mission has not reached the VDF output"),
             )
                 .into_response()
         }

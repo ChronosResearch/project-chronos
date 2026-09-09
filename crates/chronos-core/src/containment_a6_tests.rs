@@ -1,4 +1,4 @@
-//! Tests for Axiom A6 (Epistemic Humility) — cryptographic interruptibility.
+//! Tests for Axiom A6 (Epistemic Humility), cryptographic interruptibility.
 //!
 //! These tests verify that the uncertainty-driven pause mechanism works correctly
 //! and that the agent cannot bypass the autonomy threshold.
@@ -516,7 +516,7 @@ fn test_a6_and_a4_can_both_deny() {
 //
 // A6 bounds a quantity the agent reports. A7 is what stops the agent also being
 // the party that clears it. Without A7 the agent accumulates uncertainty to the
-// threshold, emits its own correction, and the bound never binds — the axiom holds
+// threshold, emits its own correction, and the bound never binds, the axiom holds
 // while enforcing nothing. These tests are therefore the ones that make A6 mean
 // something, and each corresponds to a distinct way an agent could cheat.
 
@@ -705,7 +705,7 @@ fn test_a7_agent_cannot_exceed_threshold_without_the_operator() {
         Decision::Deny(DenyReason::UncertaintyTooHigh)
     );
     // Tokens deliberately outside the chain's own token space, which
-    // `state_and_grants` draws from `[1..]` — reusing one of those would be
+    // `state_and_grants` draws from `[1..]`, reusing one of those would be
     // presenting a *genuine* grant and would prove nothing.
     for token in [[0x91u8; 32], [0x92u8; 32], [0xF3u8; 32]] {
         let self_issued = CorrectionGrant {

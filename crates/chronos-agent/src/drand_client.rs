@@ -17,7 +17,7 @@
 //!
 //! **2. Wrong signed message.** drand does not sign the round number directly. Per
 //! `crypto/schemes.go`, the unchained schemes sign
-//! `SHA-256(round_be_u64)` — the digest, which the BLS layer then maps to the
+//! `SHA-256(round_be_u64)`, the digest, which the BLS layer then maps to the
 //! curve. The previous code passed the raw 8 round bytes. An earlier audit entry
 //! recorded this as *fixed*, having changed it in the wrong direction.
 //!
@@ -51,7 +51,7 @@
 //! The bug was never in `blst`; it was in how this module drove it. So the fix
 //! keeps `blst` and corrects the usage. What is borrowed from `drand-verify` is
 //! its **test vector**, which is what turns this module from "compiles" into
-//! "demonstrably verifies a real mainnet beacon" — see
+//! "demonstrably verifies a real mainnet beacon", see
 //! [`tests::test_verifies_real_quicknet_beacon`].
 //!
 //! Reference: drand `crypto/schemes.go`, `NewPedersenBLSUnchainedG1`.
@@ -141,7 +141,7 @@ pub async fn fetch_latest_randomness(
                 target: "chronos",
                 attempt,
                 backoff_ms,
-                "drand fetch failed — retrying with backoff"
+                "drand fetch failed, retrying with backoff"
             );
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
         }
@@ -250,7 +250,7 @@ pub fn verify_beacon(resp: &DrandResponse) -> ChronosResult<()> {
     let expected = Sha256::digest(&sig_bytes);
     if expected.as_slice() != randomness.as_slice() {
         return Err(ChronosError::Drand(format!(
-            "round {} randomness does not equal SHA-256(signature) — \
+            "round {} randomness does not equal SHA-256(signature), \
              the endpoint served a valid signature with substituted randomness",
             resp.round
         )));
@@ -308,7 +308,7 @@ mod tests {
 
     /// Verification must succeed on a genuine mainnet beacon.
     ///
-    /// This runs offline — no network, no flakiness — because the beacon is a
+    /// This runs offline, no network, no flakiness, because the beacon is a
     /// fixed historical value.
     #[test]
     fn test_verifies_real_quicknet_beacon() {
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_wrong_signature_length_rejected() {
         let mut resp = round_123();
-        // 96 bytes is the G2 length — the size the old `min_pk` code expected.
+        // 96 bytes is the G2 length, the size the old `min_pk` code expected.
         resp.signature = "ab".repeat(96);
         let err = verify_beacon(&resp).expect_err("wrong length must be rejected");
         assert!(format!("{err}").contains("48 bytes"));

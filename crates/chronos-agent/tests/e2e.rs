@@ -2,8 +2,8 @@
 //!
 //! # Scope
 //!
-//! The cryptographic lifecycle — provisioning, sequential work, sealing, opening,
-//! proving, verifying — is covered end to end by
+//! The cryptographic lifecycle, provisioning, sequential work, sealing, opening,
+//! proving, verifying, is covered end to end by
 //! `chronos-snark/tests/lifecycle.rs`, which crosses the provisioner/agent trust
 //! boundary properly. Duplicating it here would only mean two places to update.
 //!
@@ -67,7 +67,7 @@ fn test_valid_mac_does_not_excuse_a_replayed_nonce() {
     raw.copy_from_slice(&hex::decode(nonce).expect("hex"));
     assert!(cache.check_and_insert(&raw), "first use must be accepted");
 
-    // Second use: MAC is still valid — it is the nonce cache that must reject.
+    // Second use: MAC is still valid, it is the nonce cache that must reject.
     verify_request_mac(&KEY, "POST", "/mission/init", nonce, b"", &mac)
         .expect("the MAC is unchanged and still valid");
     assert!(
@@ -105,7 +105,7 @@ fn test_mac_is_nonce_specific() {
 // ─── Containment composed with the lifecycle ─────────────────────────────────
 
 /// Inference is admissible only in `Active`, and the ledger records every attempt
-/// — including refusals, so probing is visible in the published attestation.
+/// including refusals, so probing is visible in the published attestation.
 #[tokio::test]
 async fn test_inference_window_is_enforced_and_recorded() {
     let s = sm();
@@ -136,7 +136,7 @@ async fn test_inference_window_is_enforced_and_recorded() {
     let (admitted, denied) = s.counters().await;
     assert_eq!(
         admitted, 4,
-        "MissionInit, one Infer, KeyReleased, and Erase — erasure is itself an admitted event"
+        "MissionInit, one Infer, KeyReleased, and Erase, erasure is itself an admitted event"
     );
     assert_eq!(denied, 3, "one refused inference in each of Armed, Locked, Erased");
     assert_eq!(
@@ -296,7 +296,7 @@ async fn test_live_local_llm_termination_threshold_behavior() {
 // The interesting property is not that the two endpoints exist, but that the
 // privileged one is unreachable without the operator key. A6 only bounds anything
 // if the agent cannot resolve its own doubt, and what stops it is exactly the
-// request MAC — so these tests exercise the containment flow and the MAC binding
+// request MAC, so these tests exercise the containment flow and the MAC binding
 // on the new paths together.
 
 /// The full HTTP-level cycle, at the layer the handlers delegate to: an
@@ -346,7 +346,7 @@ async fn test_a6_veto_and_correction_cycle() {
 /// The negative case that makes A6 mean anything: an agent cannot manufacture a
 /// correction for itself, because reaching `/human-correction` requires a MAC over
 /// the body under the operator's key. This mirrors the fabricated-key and
-/// incomplete-VDF negatives — the mechanism fails closed without the operator.
+/// incomplete-VDF negatives, the mechanism fails closed without the operator.
 #[test]
 fn test_a6_correction_cannot_be_forged_without_the_operator_key() {
     let nonce = "0123456789abcdef01234567";
@@ -383,7 +383,7 @@ fn test_a6_veto_mac_does_not_open_the_correction_endpoint() {
     );
     assert!(
         verify_request_mac(&KEY, "POST", "/human-correction", nonce, b"", &veto).is_err(),
-        "path substitution must be refused — the MAC binds the path"
+        "path substitution must be refused, the MAC binds the path"
     );
 }
 

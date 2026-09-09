@@ -1,4 +1,4 @@
-/// Wesolowski VDF — pure-Rust implementation using `num-bigint`.
+/// Wesolowski VDF, pure-Rust implementation using `num-bigint`.
 ///
 /// Replaces the GMP FFI backend with a portable `num-bigint` implementation
 /// that compiles on all architectures (x86_64, aarch64, etc.).
@@ -15,7 +15,7 @@
 /// `evaluate` performs `2T` modular squarings: `T` for the output `y` and `T`
 /// for the proof `π`, which is computed by the standard long-division recurrence
 /// (see [`WesolowskiVdf::prove`]) rather than by materialising the `T`-bit
-/// exponent `q`.  `verify` is `O(log T)` — two modular exponentiations with
+/// exponent `q`.  `verify` is `O(log T)`, two modular exponentiations with
 /// 64-bit exponents plus one `2^T mod ℓ` computation.
 use chronos_core::{ChronosError, ChronosResult, VdfEngine, VdfProof};
 use num_bigint::BigUint;
@@ -56,7 +56,7 @@ impl WesolowskiVdf {
             // and spin forever.
             let next = candidate.saturating_add(2);
             if next == candidate {
-                // Saturated at u64::MAX without finding a prime — fall back to a
+                // Saturated at u64::MAX without finding a prime, fall back to a
                 // fixed large prime so the derivation always terminates.
                 return 0xFFFF_FFFF_FFFF_FFC5; // largest prime < 2^64
             }
@@ -92,7 +92,7 @@ impl WesolowskiVdf {
     /// Replaces the previous `is_prime_trial`, which performed trial division up
     /// to `√n`.  For a hash-derived 64-bit candidate that was on the order of
     /// `2^32` iterations *per candidate*, with roughly 22 candidates scanned on
-    /// average before a prime was found — one to two billion modulo operations,
+    /// average before a prime was found, one to two billion modulo operations,
     /// taking seconds.  Because that cost is a function of the seed and not of
     /// `T`, it completely dominated and obscured the sequential squaring work
     /// that the VDF's security actually rests on.
@@ -191,7 +191,7 @@ impl WesolowskiVdf {
     /// key still live in memory. The agent reported itself erased while holding
     /// the key.
     ///
-    /// `abort` is polled every [`ABORT_POLL_INTERVAL`] squarings — often enough
+    /// `abort` is polled every [`ABORT_POLL_INTERVAL`] squarings, often enough
     /// that cancellation is prompt, rarely enough that the atomic load does not
     /// measurably slow the inner loop. On cancellation this returns
     /// [`ChronosError::Vdf`] and the caller must treat the mission as failed and
@@ -219,7 +219,7 @@ impl WesolowskiVdf {
         for i in 0..t {
             if i % ABORT_POLL_INTERVAL == 0 && abort.load(Ordering::Relaxed) {
                 return Err(ChronosError::Vdf(format!(
-                    "VDF aborted after {i} of {t} squarings — watchdog deadline reached"
+                    "VDF aborted after {i} of {t} squarings, watchdog deadline reached"
                 )));
             }
             y = (&y * &y) % n;
@@ -236,7 +236,7 @@ impl WesolowskiVdf {
         for i in 0..t {
             if i % ABORT_POLL_INTERVAL == 0 && abort.load(Ordering::Relaxed) {
                 return Err(ChronosError::Vdf(format!(
-                    "VDF proof aborted after {i} of {t} squarings — watchdog deadline reached"
+                    "VDF proof aborted after {i} of {t} squarings, watchdog deadline reached"
                 )));
             }
             let two_r = u128::from(r) * 2;
@@ -264,8 +264,8 @@ impl VdfEngine for WesolowskiVdf {
     ///
     /// `T` is honoured exactly as given in every build profile.  Earlier revisions
     /// clamped `T` to 10 under `#[cfg(debug_assertions)]`, which silently reduced
-    /// the sequential work to a constant in any non-release build — including
-    /// under `cargo test` — and, because [`VdfEngine::verify`] applied the same
+    /// the sequential work to a constant in any non-release build, including
+    /// under `cargo test`, and, because [`VdfEngine::verify`] applied the same
     /// clamp, produced proofs that verified despite doing almost no work.
     fn evaluate(&self, g: &BigUint, t: u64, n: &BigUint) -> ChronosResult<(BigUint, VdfProof)> {
         if n.is_zero() || n.is_one() {
@@ -548,7 +548,7 @@ mod tests {
         );
     }
 
-    /// `two_pow_t_mod` must stay `O(log T)` — large `T` must return promptly.
+    /// `two_pow_t_mod` must stay `O(log T)`, large `T` must return promptly.
     #[test]
     fn test_two_pow_t_mod_handles_huge_t() {
         for t in [1_000_000u64, 1u64 << 40, u64::MAX] {
@@ -569,7 +569,7 @@ mod tests {
         }
     }
 
-    /// Carmichael numbers and strong pseudoprimes to small bases — these are the
+    /// Carmichael numbers and strong pseudoprimes to small bases, these are the
     /// inputs a naive or under-witnessed primality test gets wrong.
     #[test]
     fn test_is_prime_rejects_pseudoprimes() {
@@ -597,7 +597,7 @@ mod tests {
     /// Wall time must grow with `T`.
     ///
     /// The v3.0 published benchmark reported T=1,000 at 12,092 ms and
-    /// T=100,000 at 9,828 ms — 100× the sequential work finishing faster —
+    /// T=100,000 at 9,828 ms, 100× the sequential work finishing faster, 
     /// because the measurement was dominated by trial-division prime search,
     /// whose cost is independent of `T`.  This test fails if evaluation ever
     /// becomes constant-time in `T` again.

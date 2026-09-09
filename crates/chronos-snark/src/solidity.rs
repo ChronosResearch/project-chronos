@@ -13,7 +13,7 @@
 /// yields a verifier that rejects every valid proof.
 ///
 /// **Fp2 coordinate order.** An Fp2 element is `c0 + c1·u`. The `ecPairing`
-/// precompile expects the pair encoded as `[c1, c0]` — imaginary part first,
+/// precompile expects the pair encoded as `[c1, c0]`, imaginary part first,
 /// the reverse of arkworks' `(c0, c1)`. Every G2 point exported here is swapped
 /// accordingly. This is the single most common cause of a Groth16 Solidity
 /// verifier that compiles, deploys, and then rejects everything.
@@ -21,7 +21,7 @@
 /// # Scope
 ///
 /// This module changes *where* a proof can be checked, not *what* it proves. The
-/// limits documented in `contracts/Groth16Verifier.sol` still apply — in
+/// limits documented in `contracts/Groth16Verifier.sol` still apply, in
 /// particular, CHRONOS's trusted setup is currently single-party, so on-chain
 /// acceptance is conditional on trusting the setup operator.
 use ark_bn254::{Bn254, Fq, G1Affine, G2Affine};
@@ -76,7 +76,7 @@ fn g1_to_words(p: &G1Affine) -> ChronosResult<[Word; 2]> {
 
 /// Encode a G2 point as `[[x.c1, x.c0], [y.c1, y.c0]]`.
 ///
-/// Note the deliberate `c1` before `c0` — see the module documentation.
+/// Note the deliberate `c1` before `c0`, see the module documentation.
 fn g2_to_words(p: &G2Affine) -> ChronosResult<[[Word; 2]; 2]> {
     if p.infinity {
         return Err(ChronosError::Snark(
@@ -204,8 +204,8 @@ pub fn export_proof(proof: &Proof<Bn254>) -> ChronosResult<SolidityProof> {
 
 /// Convert a serialized proof into EVM encoding.
 ///
-/// Exists so callers that only ever hold proof *bytes* — the agent's HTTP layer,
-/// for instance — do not need to depend on `ark-groth16` and `ark-serialize` just
+/// Exists so callers that only ever hold proof *bytes*, the agent's HTTP layer,
+/// for instance, do not need to depend on `ark-groth16` and `ark-serialize` just
 /// to deserialize and re-encode. Keeping arkworks types inside this crate is what
 /// stops the proof-system choice leaking into the agent.
 ///
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(w, format!("0x{}", "0".repeat(64)));
     }
 
-    /// The G2 swap is the whole point of this module — pin it with a test so a
+    /// The G2 swap is the whole point of this module, pin it with a test so a
     /// future refactor cannot quietly restore arkworks' native ordering.
     #[test]
     fn test_g2_export_swaps_c0_and_c1() {

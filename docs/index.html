@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CHRONOS Ephemeral AI agents</title>
 <meta name="description" content="An open-source Rust prototype producing a 128-byte artifact that proves an autonomous agent stopped on time and destroyed its key, without trusting the operator.">
-<meta property="og:title" content="CHRONOS — Ephemeral AI agents with provable self-termination">
+<meta property="og:title" content="CHRONOS, Ephemeral AI agents with provable self-termination">
 <meta property="og:description" content="Homomorphic encryption, a verifiable delay function, and a zero-knowledge erasure proof, composed so an agent cannot outlive its deadline.">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -97,7 +97,7 @@
   .btn.fill { background: var(--ink); color: #fff; }
   .btn:hover { text-decoration: none; opacity: 0.86; }
 
-  /* Orb — evokes sequential work: rings that must be traversed in order. */
+  /* Orb, evokes sequential work: rings that must be traversed in order. */
   .orb-shell { display: flex; justify-content: center; padding: 46px 0 8px; }
   .orb { width: min(340px, 74vw); height: min(340px, 74vw); position: relative; }
   .orb svg { width: 100%; height: 100%; display: block; }
@@ -229,7 +229,7 @@
   <p class="lede">
     CHRONOS composes homomorphic encryption, a verifiable delay function, and a
     zero-knowledge erasure proof so that a 128-byte artifact shows an autonomous
-    agent stopped on time and destroyed its key — without trusting the agent or
+    agent stopped on time and destroyed its key, without trusting the agent or
     whoever ran it.
   </p>
   <div class="cta">
@@ -272,8 +272,8 @@
     <div class="eyebrow">The gap</div>
     <h2>Four questions with no verifiable answer</h2>
     <p class="sub">
-      Autonomous agents are being handed real credentials — cloud accounts, payment
-      rails, code execution — for bounded periods. Increasingly the party bearing
+      Autonomous agents are being handed real credentials, cloud accounts, payment
+      rails, code execution, for bounded periods. Increasingly the party bearing
       the risk is not the party operating the agent.
     </p>
 
@@ -296,7 +296,7 @@
       <div class="card">
         <span class="tagline">Question 4</span>
         <h3>Can anyone else check?</h3>
-        <p>Today, no. Every answer above reduces to the operator asserting it — the party with the strongest incentive to assert it.</p>
+        <p>Today, no. Every answer above reduces to the operator asserting it, the party with the strongest incentive to assert it.</p>
       </div>
     </div>
 
@@ -386,7 +386,7 @@
         <caption>
           Intel Core 5 210H, 8 physical cores, 16 GB, mains power. All three shapes
           verified against a plaintext reference. Per-operation cost is flat as the
-          network grows, so the ceiling is the constant rather than the scaling —
+          network grows, so the ceiling is the constant rather than the scaling, 
           <span class="mono">FheInt64</span> carries 64 bits where the worst-case
           magnitude needs about 23, making a narrower ciphertext type the obvious
           next optimisation.
@@ -454,7 +454,7 @@ cd project-chronos
         <li>
           <strong>The trusted setup is single-party.</strong> Verification is
           therefore conditional on trusting whoever ran it. This binds every claim
-          above. It is fixable by a standard multi-party ceremony — engineering,
+          above. It is fixable by a standard multi-party ceremony, engineering,
           not research.
         </li>
         <li>
@@ -484,7 +484,7 @@ cd project-chronos
           If ground control can sign a revocation, why build a cryptographic
           deadline? Because the two fail differently: revocation fails open when
           the channel is gone, expiry fails closed. CHRONOS is a complement to
-          revocation, not a replacement — but only one of them leaves evidence a
+          revocation, not a replacement, but only one of them leaves evidence a
           third party can check afterwards.
         </p>
       </div>

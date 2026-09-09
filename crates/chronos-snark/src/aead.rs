@@ -1,4 +1,4 @@
-//! Chronos-AEAD — Poseidon-based authenticated encryption for the time-locked key.
+//! Chronos-AEAD, Poseidon-based authenticated encryption for the time-locked key.
 //!
 //! # Why replace AES-256-GCM
 //!
@@ -14,8 +14,8 @@
 //! decryption". The gadget terminated in `sk[0] * 1 = sk[0]`, a tautology.
 //!
 //! The correct fix is not a better AES gadget. It is to stop using AES for this
-//! one purpose. The key-release step is entirely internal to CHRONOS — no
-//! interoperability requirement forces AES — so it can use a cipher built from
+//! one purpose. The key-release step is entirely internal to CHRONOS, no
+//! interoperability requirement forces AES, so it can use a cipher built from
 //! the same Poseidon permutation the circuit already pays for. Cost drops from
 //! ~60,000 constraints to roughly 2,000, and the relation becomes genuinely
 //! encoded rather than simulated.
@@ -38,13 +38,13 @@
 //! Decryption recomputes the keystream, subtracts, recomputes the tag, and
 //! compares. Under the assumption that the Poseidon sponge is a PRF, the
 //! keystream is indistinguishable from random, so this is a stream cipher with a
-//! PRF-based MAC over the ciphertext — the standard encrypt-then-MAC composition,
+//! PRF-based MAC over the ciphertext, the standard encrypt-then-MAC composition,
 //! which is IND-CPA plus INT-CTXT and therefore IND-CCA2.
 //!
 //! # Nonce discipline
 //!
 //! The keystream is a deterministic function of `(key, nonce)`. Reusing a nonce
-//! under the same key reveals the XOR — here, the field difference — of the two
+//! under the same key reveals the XOR, here, the field difference, of the two
 //! plaintexts, which is the classic catastrophic stream-cipher failure.
 //!
 //! In CHRONOS this is structurally safe: one mission has one key and encrypts one
@@ -233,7 +233,7 @@ impl ChronosAead {
     /// unauthenticated value can never escape this function.
     ///
     /// # Errors
-    /// Returns [`ChronosError::Erasure`] on tag mismatch — wrong key, wrong
+    /// Returns [`ChronosError::Erasure`] on tag mismatch, wrong key, wrong
     /// nonce, or tampered ciphertext. The error deliberately does not
     /// distinguish between those cases.
     pub fn decrypt(key: &[Fr; KEY_ELEMS], ct: &Ciphertext) -> ChronosResult<Vec<Fr>> {
@@ -301,9 +301,9 @@ pub fn derive_key_gadget(
 
 /// In-circuit authenticated decryption.
 ///
-/// Enforces the tag relation as a constraint — an incorrect tag makes the circuit
+/// Enforces the tag relation as a constraint, an incorrect tag makes the circuit
 /// unsatisfiable, so there is no in-circuit equivalent of "ignoring the return
-/// value" — and returns the recovered plaintext elements.
+/// value", and returns the recovered plaintext elements.
 ///
 /// # Errors
 /// Propagates [`SynthesisError`].

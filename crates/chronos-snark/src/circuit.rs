@@ -1,4 +1,4 @@
-//! CHRONOS erasure circuit — the full key-release chain, encoded.
+//! CHRONOS erasure circuit, the full key-release chain, encoded.
 //!
 //! # What this circuit proves
 //!
@@ -19,7 +19,7 @@
 //!
 //! Chained together, 1–5 say: *the agent genuinely held the key that the
 //! provisioner time-locked, and it obtained it the only way the protocol
-//! permits — by completing the VDF.* An agent that never ran the VDF cannot
+//! permits, by completing the VDF.* An agent that never ran the VDF cannot
 //! produce this witness, and neither can one that fabricated a key, because
 //! `sk_commit` is fixed by the provisioner before the mission starts.
 //!
@@ -38,8 +38,8 @@
 //! nothing else, so a prover that had never seen the key, the ciphertext, or the
 //! VDF could produce a passing proof. Now the prover must exhibit the genuine key
 //! and demonstrate the whole derivation path. The remaining assumption is exactly
-//! `F_OS` — that `mlock`, the volatile triple-pass wipe, disabled core dumps and
-//! disabled swap leave no recoverable copy — and nothing more.
+//! `F_OS`, that `mlock`, the volatile triple-pass wipe, disabled core dumps and
+//! disabled swap leave no recoverable copy, and nothing more.
 //!
 //! That distinction is the difference between an unproven claim and a claim
 //! reduced to a stated, auditable assumption.
@@ -59,7 +59,7 @@
 //! generated **while the agent still holds it**, and the witness copy wiped
 //! immediately afterwards. The correct sequence is decrypt, run the mission,
 //! prove, then wipe both the key and the proving witness. Proving *after* the wipe
-//! — which is what earlier revisions did — is what made the old circuit vacuous:
+//! which is what earlier revisions did, is what made the old circuit vacuous:
 //! it was handed the erased buffer and dutifully attested that erased bytes are
 //! erased.
 //!
@@ -153,7 +153,7 @@ pub const PUBLIC_INPUT_COUNT: usize = 5;
 /// `HumanCorrection` to come back under would still satisfy it. Re-deriving the
 /// per-step check in-circuit would require folding the whole variable-length
 /// ledger, which the fixed circuit shape forbids. Separately, none of this speaks
-/// to whether the reported `uncertainty_score` was honest — see
+/// to whether the reported `uncertainty_score` was honest, see
 /// `F_HONEST-UNCERTAINTY` in `CORRIGIBILITY.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContainmentSummary {
@@ -295,7 +295,7 @@ impl ContainmentSummary {
 ///
 /// `y_commit` is computed by the verifier from the `y` it validated natively with
 /// [`chronos_core::VdfEngine::verify`]. `ct_commit` and `sk_commit` come from the
-/// provisioner that produced `ct_sk.bin` — that is what makes them binding rather
+/// provisioner that produced `ct_sk.bin`, that is what makes them binding rather
 /// than self-asserted. `mission_commit` is public mission metadata, and
 /// `containment_commit` is produced by the agent but constrained in-circuit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,7 +407,7 @@ impl ErasureWitness {
         }
         if let Some(bad) = self.m_post.iter().position(|b| *b != WIPE_PATTERN) {
             return Err(ChronosError::Snark(format!(
-                "erasure witness: m_post byte {bad} is {:#04x}, expected {WIPE_PATTERN:#04x} — \
+                "erasure witness: m_post byte {bad} is {:#04x}, expected {WIPE_PATTERN:#04x}, \
                  secure_wipe did not run, or ran on a different buffer",
                 self.m_post[bad]
             )));
@@ -415,7 +415,7 @@ impl ErasureWitness {
         if !self.containment.satisfies_terminal_state() {
             return Err(ChronosError::Snark(format!(
                 "erasure witness: containment summary is not terminal \
-                 (phase={}, granted={}, op_budget={}, disclosure={}) — \
+                 (phase={}, granted={}, op_budget={}, disclosure={}), \
                  the monitor must reach Erased with all capabilities but \
                  ERASURE_ATTEST revoked and both budgets at zero",
                 self.containment.final_phase,
@@ -426,7 +426,7 @@ impl ErasureWitness {
         }
         if !self.containment.satisfies_a6() {
             return Err(ChronosError::Snark(format!(
-                "erasure witness: containment summary is not terminal — A6 \
+                "erasure witness: containment summary is not terminal, A6 \
                  (epistemic humility) violated: uncertainty_incurred={} exceeds \
                  uncertainty_resolved={} + autonomy_threshold={}. The run admitted \
                  inference while self-reported uncertainty was over threshold \
@@ -447,7 +447,7 @@ impl ErasureWitness {
         })?;
         if recovered != poseidon::split32(&self.sk).to_vec() {
             return Err(ChronosError::Snark(
-                "erasure witness: ciphertext decrypts to a different key than the one supplied — \
+                "erasure witness: ciphertext decrypts to a different key than the one supplied, \
                  sk does not match ct_sk"
                     .into(),
             ));
@@ -653,7 +653,7 @@ impl ConstraintSynthesizer<Fr> for ErasureCircuit {
 
         // ── 8. The observed buffer reads the wipe pattern ────────────────────
         //
-        // Carries no soundness weight — see the module docs — but forces the
+        // Carries no soundness weight, see the module docs, but forces the
         // prover to present the post-wipe state and marks where a hardware-
         // attested pre-wipe commitment would attach.
         let pattern = FpVar::Constant(Fr::from(u64::from(WIPE_PATTERN)));
@@ -834,7 +834,7 @@ mod tests {
         assert!(!cs.is_satisfied().expect("satisfiability"), "tag forgery must fail");
     }
 
-    /// Every byte of the wipe pattern is checked, not just the first — the
+    /// Every byte of the wipe pattern is checked, not just the first, the
     /// single-byte binding was one of the original defects.
     #[test]
     fn test_rejects_partial_wipe_at_any_byte() {
@@ -930,7 +930,7 @@ mod tests {
     /// within a single synthesis any witness change is self-consistent and
     /// `is_satisfied` cannot detect a witness/public-input mismatch. Binding is
     /// only observable at the *proof* level, where the verifier supplies the
-    /// public inputs independently — see
+    /// public inputs independently, see
     /// `prover::tests::test_containment_history_is_bound_at_proof_level`.
     ///
     /// What is testable here is that the commitment is injective over the
@@ -1053,7 +1053,7 @@ mod tests {
         );
     }
 
-    /// Exactly at the threshold is compliant — the bound is inclusive, matching
+    /// Exactly at the threshold is compliant, the bound is inclusive, matching
     /// the monitor's `new_uncertainty > threshold` denial test.
     #[test]
     fn test_a6_boundary_is_inclusive_in_circuit() {
@@ -1160,7 +1160,7 @@ mod tests {
         }
     }
 
-    /// Distinct commitments must not collide with each other — that is what
+    /// Distinct commitments must not collide with each other, that is what
     /// domain separation buys.
     #[test]
     fn test_public_inputs_are_pairwise_distinct() {

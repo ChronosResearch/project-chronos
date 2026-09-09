@@ -32,7 +32,7 @@ use tracing::{info, warn};
 /// incorrect permissions (must be 0600 on Unix).
 pub fn validate_tls_config(cfg: &TlsConfig) -> ChronosResult<()> {
     if !cfg.enabled {
-        warn!(target: "chronos", "mTLS is DISABLED — plain HTTP in use. Not suitable for production.");
+        warn!(target: "chronos", "mTLS is DISABLED, plain HTTP in use. Not suitable for production.");
         return Ok(());
     }
 
@@ -76,7 +76,7 @@ fn check_file_permissions(path: &str) -> ChronosResult<()> {
         let mode = meta.permissions().mode() & 0o777;
         if mode != 0o600 {
             return Err(ChronosError::Config(format!(
-                "TLS key '{path}' has mode {mode:o} — must be 0600. Run: chmod 600 {path}"
+                "TLS key '{path}' has mode {mode:o}, must be 0600. Run: chmod 600 {path}"
             )));
         }
     }
@@ -151,7 +151,7 @@ mod tests {
         for i in 0u8..4 {
             cache.check_and_insert(&[i; 12]);
         }
-        // Insert a 5th — evicts the first.
+        // Insert a 5th, evicts the first.
         cache.check_and_insert(&[4u8; 12]);
         // First nonce should now be accepted again (evicted from window).
         assert!(cache.check_and_insert(&[0u8; 12]), "Evicted nonce must be accepted again");

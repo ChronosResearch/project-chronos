@@ -4,7 +4,7 @@
 
 **Theorem 1 (UC-Erasure).** Let `λ` be the security parameter. Assume:
 
-- `(G, H)` is a `(T, ε_vdf)`-sequential VDF (Boneh et al., 2018) — no adversary
+- `(G, H)` is a `(T, ε_vdf)`-sequential VDF (Boneh et al., 2018), no adversary
   running in time `o(T)` can compute `y = g^(2^T) mod N` with advantage > `ε_vdf`.
 - `AES-256-GCM` is `(t, ε_aes)`-IND-CCA2 secure.
 - `HKDF-SHA256` is a `(t, ε_hkdf)`-secure PRF (modelled as a random oracle).
@@ -116,7 +116,7 @@ Intel TDX or AMD SEV-SNP attestation). This is left as future work.
 | Groth16 AES-GCM gadget simulates constraints, not real AES-GCM | Prototype | Proof not binding to actual AES-GCM computation |
 | MPC trusted setup is simulated (3-party local XOR) | Prototype | Toxic waste not distributed across real parties |
 | `certN.bin` falls back to hardcoded RSA-2048 | Prototype | VDF group order not from a real MPC ceremony |
-| UC proof is a structured sketch, not machine-checked | Research | Reviewer concern — Coq/Lean proof needed for top-tier |
+| UC proof is a structured sketch, not machine-checked | Research | Reviewer concern, Coq/Lean proof needed for top-tier |
 | `F_OS` is axiomatized, not reduced to hardware attestation | Research | Strongest security claim unproven without TDX/SEV-SNP |
 
 ---

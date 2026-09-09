@@ -1,4 +1,4 @@
-//! The mission provisioning artifact — the public commitments a verifier holds.
+//! The mission provisioning artifact, the public commitments a verifier holds.
 //!
 //! # Why this file is the load-bearing piece
 //!
@@ -8,7 +8,7 @@
 //! choosing, commit to both, and produce a perfectly valid proof about material
 //! that was never time-locked. That is precisely the hole that made earlier
 //! revisions of the circuit vacuous, and no amount of constraint-writing closes
-//! it — it is closed by *who generates the commitments*.
+//! it, it is closed by *who generates the commitments*.
 //!
 //! So CHRONOS has three roles, and they must be distinct:
 //!
@@ -33,7 +33,7 @@
 //!
 //! Field elements are 32-byte big-endian hex. JSON rather than a binary format
 //! because this file is meant to be read by humans, pasted into grant appendices,
-//! and diffed — it is a publication, not a wire format.
+//! and diffed, it is a publication, not a wire format.
 
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -216,7 +216,7 @@ impl MissionPublic {
     pub fn commitments(&self) -> ChronosResult<[Fr; 4]> {
         if self.version != MISSION_ARTIFACT_VERSION {
             return Err(ChronosError::Snark(format!(
-                "mission artifact version {} is not supported (expected {MISSION_ARTIFACT_VERSION}) — \
+                "mission artifact version {} is not supported (expected {MISSION_ARTIFACT_VERSION}), \
                  the commitment definitions changed; re-provision the mission",
                 self.version
             )));
@@ -298,7 +298,7 @@ mod tests {
     }
 
     /// The A7 anchor must survive the artifact round trip, and a malformed one must
-    /// be refused rather than silently defaulted — defaulting would disable every
+    /// be refused rather than silently defaulted, defaulting would disable every
     /// correction the operator provisioned.
     #[test]
     fn test_correction_anchor_round_trips_and_validates() {

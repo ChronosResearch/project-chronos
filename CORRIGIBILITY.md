@@ -1,12 +1,12 @@
 # Cryptographic Interruptibility: "Pause and Reflect"
 
-**A cryptographically enforced uncertainty-driven pause mechanism — a scoped contribution to AI corrigibility research.**
+**A cryptographically enforced uncertainty-driven pause mechanism, a scoped contribution to AI corrigibility research.**
 
 ---
 
 ## The Core Idea
 
-Traditional AI safety relies on external "kill switches" or policy-based controls. CHRONOS now includes **Axiom A6 (Epistemic Humility)** — a cryptographic primitive that prevents the agent from acting when its own uncertainty calculation says it doesn't know enough.
+Traditional AI safety relies on external "kill switches" or policy-based controls. CHRONOS now includes **Axiom A6 (Epistemic Humility)**, a cryptographic primitive that prevents the agent from acting when its own uncertainty calculation says it doesn't know enough.
 
 This is not behavioral training or a prompt. It is **mathematically enforced at the containment layer**: if the agent's accumulated uncertainty exceeds its autonomy threshold, inference requests are denied with the same finality as budget exhaustion or deadline violations.
 
@@ -66,7 +66,7 @@ Event::HumanCorrection {
 ### 3. Axiom A6: Epistemic Humility
 
 ```rust
-// A6 — EPISTEMIC HUMILITY (the corrigibility primitive).
+// A6, EPISTEMIC HUMILITY (the corrigibility primitive).
 let current_uncertainty = self.uncertainty_incurred
     .saturating_sub(self.uncertainty_resolved);
 let new_uncertainty = current_uncertainty
@@ -119,7 +119,7 @@ pub struct LedgerRecord {
 }
 ```
 
-The erasure proof binds this ledger via Poseidon commitment. An agent that **claims** to be interruptible but **acts** when uncertain cannot produce a valid proof. The proof carries evidence of self-interruption — or its absence.
+The erasure proof binds this ledger via Poseidon commitment. An agent that **claims** to be interruptible but **acts** when uncertain cannot produce a valid proof. The proof carries evidence of self-interruption, or its absence.
 
 ### 3. Human-in-the-Loop by Design
 
@@ -157,7 +157,7 @@ These are public, tamper-evident metrics. An agent that **never** triggered `Unc
 
 **Residual Assumptions:**
 
-#### `F_HONEST-UNCERTAINTY` — Self-Report Honesty
+#### `F_HONEST-UNCERTAINTY`, Self-Report Honesty
 
 The circuit proves the agent did not act while its **self-reported** `uncertainty_score` exceeded the autonomy threshold. It does **NOT** prove that `uncertainty_score` reflects the agent's true epistemic state.
 
@@ -269,7 +269,7 @@ After mission completion, anyone can:
 
 > "An agent is corrigible if it cooperates with what its creators regard as a corrective intervention."
 
-**CHRONOS A6 contribution:** The first cryptographic enforcement of a corrigibility property. The agent doesn't just "cooperate with correction" — it is **cryptographically prevented** from acting when its own doubt calculation says correction is needed.
+**CHRONOS A6 contribution:** The first cryptographic enforcement of a corrigibility property. The agent doesn't just "cooperate with correction", it is **cryptographically prevented** from acting when its own doubt calculation says correction is needed.
 
 ### Epistemic Humility (Christiano et al. 2021)
 
@@ -375,7 +375,7 @@ The agent's self-reported doubt is not a subjective feeling, a training objectiv
 
 **What we do not claim:** A solution to corrigibility, value alignment, or adversarial robustness. The quality of the uncertainty estimate is outside the threat model (residual assumption `F_HONEST-UNCERTAINTY`), and an agent that systematically underreports uncertainty defeats the mechanism.
 
-When future AI safety research asks "how do we make agents seek human guidance when uncertain?", CHRONOS A6 provides a building block: **enforce it cryptographically, verify it exhaustively, and prove it in zero knowledge** — but with the acknowledged gap that "reported uncertainty" and "true uncertainty" are not guaranteed to align.
+When future AI safety research asks "how do we make agents seek human guidance when uncertain?", CHRONOS A6 provides a building block: **enforce it cryptographically, verify it exhaustively, and prove it in zero knowledge**, but with the acknowledged gap that "reported uncertainty" and "true uncertainty" are not guaranteed to align.
 
 The gap is no longer "we hope the agent is interruptible." The gap is "here is a 128-byte proof of when it paused given its self-reported uncertainty, and whether that self-report was honest is a separate question."
 
@@ -392,5 +392,5 @@ The gap is no longer "we hope the agent is interruptible." The gap is "here is a
 ---
 
 **License:** Apache-2.0  
-**Status:** Prototype — not audited, not production-ready  
-**Contribution:** A cryptographically enforced interruptibility mechanism — a scoped building block for AI corrigibility research, with explicit assumptions about uncertainty estimation honesty.
+**Status:** Prototype, not audited, not production-ready  
+**Contribution:** A cryptographically enforced interruptibility mechanism, a scoped building block for AI corrigibility research, with explicit assumptions about uncertainty estimation honesty.

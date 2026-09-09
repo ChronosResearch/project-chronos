@@ -1,4 +1,4 @@
-//! `chronos-provision` — generate a time-locked mission.
+//! `chronos-provision`, generate a time-locked mission.
 //!
 //! This binary plays the **provisioner** role: it creates the secret key, seals it
 //! under a key that can only be recovered by completing the VDF, publishes the
@@ -10,7 +10,7 @@
 //! them it could fabricate a key, seal it under a key of its own choosing, commit
 //! to both, and produce a valid proof about material that was never time-locked.
 //! The soundness of the whole scheme therefore rests on these commitments being
-//! fixed by a party the verifier trusts *more than* the agent — normally the
+//! fixed by a party the verifier trusts *more than* the agent, normally the
 //! ground station that dispatched it. See `chronos_snark::mission`.
 //!
 //! # A correction to the CHRONOS paper's modulus argument
@@ -23,7 +23,7 @@
 //! That reasoning is sound but the conclusion is too strong. It holds only when the
 //! agent is also the puzzle's creator. The security requirement is that **the
 //! agent** cannot shortcut, not that nobody can. When provisioning is performed by
-//! a distinct party — which it must be anyway, per the paragraph above — that party
+//! a distinct party, which it must be anyway, per the paragraph above, that party
 //! generating `N = p·q` and retaining `φ(N)` is exactly Rivest–Shamir–Wagner
 //! time-lock puzzles: the creator shortcuts, the solver cannot. The provisioner is
 //! already trusted with `sk`, since it *chose* `sk`, so trusting it with `φ(N)`
@@ -454,7 +454,7 @@ fn restrict_permissions(path: &std::path::Path) -> Result<()> {
         // ignored: on Windows, protect ct_sk.bin with filesystem ACLs yourself.
         let _ = path;
         eprintln!(
-            "warning: file permissions not restricted on this platform — \
+            "warning: file permissions not restricted on this platform, \
              protect {} with filesystem ACLs",
             path.display()
         );

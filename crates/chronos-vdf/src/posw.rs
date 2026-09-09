@@ -36,7 +36,7 @@ impl PoswEngine {
 
         // STEP 5 – Bounded channel (32 slots). If the writer falls behind the
         // hasher, `blocking_send` will park the blocking thread until a slot
-        // frees — this is the correct back-pressure mechanism and prevents
+        // frees, this is the correct back-pressure mechanism and prevents
         // unbounded memory growth.
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(32);
         let abort_clone = Arc::clone(&abort_signal);
@@ -71,7 +71,7 @@ impl PoswEngine {
                 current = hasher.finalize().to_vec();
 
                 // Every 1000 steps, enqueue a checkpoint.  blocking_send parks
-                // here if the writer is behind — this is intentional back-pressure.
+                // here if the writer is behind, this is intentional back-pressure.
                 if i % 1000 == 0 {
                     // Ignore send errors: writer task already has the data for
                     // all previous checkpoints; a send error means the writer

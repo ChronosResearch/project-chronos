@@ -17,7 +17,7 @@
 //! than ciphertext-by-ciphertext. That distinction is worth stating plainly: the
 //! latter costs orders of magnitude more, and a network built that way is not
 //! viable at any interesting width. FHE here protects the *inputs*, not the model
-//! — the model is public, like a SNARK verifying key.
+//! the model is public, like a SNARK verifying key.
 //!
 //! Programmable bootstrapping still happens inside `.ge()` and `.select()`, but
 //! `tfhe-rs` owns it. A hand-built univariate LUT would have to operate on
@@ -31,7 +31,7 @@
 //!
 //! `tfhe-rs` keeps the server key in **thread-local storage**. Parallelising with
 //! the global rayon pool therefore requires broadcasting the key to every worker
-//! — and a process containing more than one key pair has no safe way to do that.
+//! and a process containing more than one key pair has no safe way to do that.
 //! Each broadcast overwrites the previous one, so an evaluation using key A can
 //! land on a worker holding key B and decrypt to noise. In this codebase
 //! `FheEngine` and the test suite each hold their own keys, which is precisely
@@ -41,7 +41,7 @@
 //!
 //! The correct fix is a dedicated `rayon::ThreadPool` per engine, built with a
 //! `start_handler` that installs that engine's key, so no pool is ever shared
-//! between key pairs. That is worth doing and is not done here — a silent
+//! between key pairs. That is worth doing and is not done here, a silent
 //! wrong-answer bug is a bad trade for a speedup that was never measured.
 //! Evaluation is serial and correct.
 //!
@@ -121,7 +121,7 @@ pub struct MlpWeights {
 }
 
 impl MlpWeights {
-    /// Number of hidden units — i.e. the number of PBS calls per inference.
+    /// Number of hidden units, i.e. the number of PBS calls per inference.
     #[must_use]
     pub fn hidden_width(&self) -> usize {
         self.hidden_weights.len()
@@ -145,7 +145,7 @@ impl MlpWeights {
     /// the bound exceeds `i64::MAX`, meaning the model can wrap and must not be
     /// used at this input range.
     ///
-    /// The bound is deliberately loose — it assumes every term attains its
+    /// The bound is deliberately loose, it assumes every term attains its
     /// maximum with the same sign, which real inputs will not do. A model that
     /// passes is safe; a model that fails might still be fine in practice, but
     /// not provably, and silent wraparound is not a failure mode worth accepting
@@ -245,7 +245,7 @@ impl MlpWeights {
     ///
     /// Weights land in `[-w_abs_max, w_abs_max]` from a fixed-seed LCG, so
     /// benchmark runs are reproducible. This is *not* a trained model and makes
-    /// no accuracy claim — it exists to measure latency at a realistic shape,
+    /// no accuracy claim, it exists to measure latency at a realistic shape,
     /// which depends on dimensions rather than on weight values.
     #[must_use]
     pub fn pseudorandom_quantized(
@@ -256,7 +256,7 @@ impl MlpWeights {
         seed: u64,
     ) -> Self {
         // SplitMix64. An earlier version seeded an LCG with `seed | 1`, which
-        // collapses every even seed onto its odd successor — seeds 42 and 43 both
+        // collapses every even seed onto its odd successor, seeds 42 and 43 both
         // became 43 and produced byte-identical models. SplitMix64 accepts any
         // seed including zero, needs no such guard, and gives distinct streams for
         // distinct seeds.
@@ -327,7 +327,7 @@ impl TwoLayerMlp {
     ) -> ChronosResult<Vec<FheInt64>> {
         self.weights.validate(inputs.len(), input_abs_max)?;
 
-        // Hidden layer: one PBS per unit, the dominant latency term. Serial — see
+        // Hidden layer: one PBS per unit, the dominant latency term. Serial, see
         // the module documentation for why parallelising this needs a per-engine
         // thread pool rather than the global one.
         let hidden: Vec<FheInt64> = self
@@ -415,8 +415,8 @@ mod tests {
 
     /// One key pair shared by every test in this module.
     ///
-    /// Sharing is no longer required for correctness — evaluation is serial and
-    /// the server key is thread-local, so tests cannot interfere — but key
+    /// Sharing is no longer required for correctness, evaluation is serial and
+    /// the server key is thread-local, so tests cannot interfere, but key
     /// generation is by far the slowest thing in this module, and paying it once
     /// per process rather than once per test takes the suite from minutes to
     /// seconds.

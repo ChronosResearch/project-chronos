@@ -5,8 +5,8 @@ what it does not.*
 
 ## The gap
 
-Autonomous agents are being handed real credentials — cloud accounts, payment
-rails, code-execution environments, internal APIs — and set to work for bounded
+Autonomous agents are being handed real credentials, cloud accounts, payment
+rails, code-execution environments, internal APIs, and set to work for bounded
 periods. The party that **bears the risk** of such an agent is increasingly not the
 party that **operates** it. A vendor runs the agent; a customer's infrastructure is
 what it touches. A lab runs an evaluation; a third party's systems are in scope.
@@ -30,7 +30,7 @@ stops being an acceptable answer for the party carrying the downside.
 **Revocation from a control plane** is the standard answer and the right default.
 It fails in exactly the cases that matter: when the agent is offline, when it has
 lost or severed its channel, when the control plane is itself compromised, or when
-the operator declines to pull the lever. Revocation is a *liveness* mechanism — it
+the operator declines to pull the lever. Revocation is a *liveness* mechanism, it
 requires someone to act. A deadline that holds by construction requires nobody.
 
 **Trusted execution environments** hide plaintext from the host, which is
@@ -47,7 +47,7 @@ operator. That is the gap.
 
 ## What CHRONOS contributes
 
-A **published, checkable artifact** — 128 bytes plus five commitments — that
+A **published, checkable artifact** of 128 bytes plus five commitments, that
 establishes, without trusting the agent or its operator, that the agent held a key
 released only by sequential work, and that its capability monitor terminated in a
 fully-revoked state.
@@ -60,7 +60,7 @@ governs it, and no network connection is needed for it to hold. The deadline is 
 property of arithmetic rather than of anyone's cooperation.
 
 **Proof-carrying containment.** Containment is expressed as five order-theoretic
-invariants over a lattice-valued capability state — capabilities only shrink,
+invariants over a lattice-valued capability state, capabilities only shrink,
 budgets only decrease, the lifecycle only advances, no admitted operation can
 outlive the deadline, and shutdown is reachable from every state. These are
 verified exhaustively before the agent accepts its first request, and the resulting
@@ -94,14 +94,14 @@ poor position from which to negotiate the terms of delegated autonomy.
 
 The trusted setup is currently **single-party**, so verification is conditional on
 trusting whoever ran it. This is the binding limitation on every claim above, and
-it is fixable by a standard multi-party ceremony — engineering, not research.
+it is fixable by a standard multi-party ceremony: engineering, not research.
 
 **No argument in a circuit can establish that memory was freed.** A SNARK
 constrains values, not memory locations, so the prover supplies the post-wipe
 buffer and could retain a copy elsewhere. The residual assumption is exactly
-`F_OS` — the assumption that the operating system honours memory locking, keeps
+`F_OS`, the assumption that the operating system honours memory locking, keeps
 the pages out of swap, suppresses core dumps, and that the volatile overwrite is
-not elided — and nothing beyond it. Discharging it requires binding a hardware
+not elided, and nothing beyond it. Discharging it requires binding a hardware
 attestation into the proof's public inputs, which we have not implemented.
 
 Earlier revisions of this work had a much larger gap here: the circuit checked that
@@ -117,7 +117,7 @@ claim to have closed it.
 Because revocation and expiry fail differently. Revocation fails open when the
 channel is gone; expiry fails closed. The interesting deployments are precisely the
 ones where the agent is autonomous, intermittently connected, or operating in an
-environment the principal does not control — which is where a mechanism requiring
+environment the principal does not control, which is where a mechanism requiring
 an online decision is weakest.
 
 The honest position is that CHRONOS is a **complement** to revocation, not a
@@ -130,8 +130,8 @@ The prototype implements all four properties with a measured artifact: 8,267 rea
 R1CS constraints, 128-byte proofs verifying in 1 ms, and an end-to-end test
 crossing the provisioner/agent boundary with real sequential squarings. The
 containment axioms are checked at startup by exhaustive enumeration over the
-*abstraction* — 1,728 states, the product of the finite capability, budget and
-lifecycle domains — not over the concrete state space, which is unbounded.
+*abstraction*, 1,728 states, the product of the finite capability, budget and
+lifecycle domains, not over the concrete state space, which is unbounded.
 
 FHE inference is the largest gap between the prototype and a deployable system.
 Measured on an 8-core Intel Core 5 210H, cost per homomorphic multiplication is

@@ -1,4 +1,4 @@
-//! Poseidon-128 over the BN254 scalar field — the algebraic substrate for every
+//! Poseidon-128 over the BN254 scalar field, the algebraic substrate for every
 //! CHRONOS commitment, KDF, and AEAD.
 //!
 //! # Why this module exists
@@ -6,7 +6,7 @@
 //! Previous revisions hand-rolled a "Poseidon x^5 sponge" in
 //! [`crate::circuit`]. It was not Poseidon. The round function applied `x^5`
 //! correctly, but there were no round constants and the "MDS mix" summed the
-//! three lanes into lane 0 while leaving lanes 1 and 2 untouched — a
+//! three lanes into lane 0 while leaving lanes 1 and 2 untouched, a
 //! non-invertible, non-MDS linear layer. A permutation without round constants
 //! is also trivially susceptible to invariant-subspace attacks. Its ~650
 //! constraints were decorative: the derived `K_enc` was bound to
@@ -39,7 +39,7 @@
 //!
 //! The MDS matrix is Cauchy: `mds[i][j] = 1 / (x_i + y_j)`. Any Cauchy matrix
 //! with pairwise-distinct `x_i`, pairwise-distinct `y_j`, and no `x_i + y_j = 0`
-//! is MDS — every square submatrix is invertible. That is a theorem, not a
+//! is MDS, every square submatrix is invertible. That is a theorem, not a
 //! heuristic, and [`tests::test_mds_is_cauchy_wellformed`] checks the
 //! preconditions actually hold for the generated matrix rather than assuming it.
 //!
@@ -339,7 +339,7 @@ mod tests {
     /// The load-bearing test for the whole crate.
     ///
     /// If the native digest and the in-circuit digest ever diverge, every honest
-    /// proof stops verifying, and the symptom — "valid witness, rejected proof" —
+    /// proof stops verifying, and the symptom, "valid witness, rejected proof", 
     /// gives no hint as to the cause. Every helper that has both a native and a
     /// gadget form is checked here.
     #[test]

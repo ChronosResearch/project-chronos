@@ -7,7 +7,7 @@ import {Groth16Verifier} from "./Groth16Verifier.sol";
 /// @notice Public, append-only record of verified erasure attestations. Replaces
 ///         "ask the operator whether the agent wiped" with "check the chain".
 ///
-/// @dev SCOPE — read `Groth16Verifier.sol` before citing an entry here as a
+/// @dev SCOPE, read `Groth16Verifier.sol` before citing an entry here as a
 ///      containment guarantee. A stored attestation proves that, at `attestedAt`,
 ///      someone submitted a proof satisfying the erasure circuit for the recorded
 ///      commitments under the deployed verifying key. The load-bearing caveat is
@@ -28,7 +28,7 @@ contract ChronosRegistry {
     struct Attestation {
         /// Block timestamp at which the proof was accepted.
         uint64 attestedAt;
-        /// Address that submitted the proof. Informational only — the proof, not
+        /// Address that submitted the proof. Informational only, the proof, not
         /// the sender, is what carries weight.
         address attester;
         /// Poseidon commitment to the VDF output.

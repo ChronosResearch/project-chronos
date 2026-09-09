@@ -182,7 +182,7 @@ Upload to a permanent, public location (GitHub release, IPFS, etc.):
 2. **Verifying key**: `chronos_ceremony_2027.vk`
 3. **Transcript summary**: List of all participants, contribution hashes, timeline
 
-**Do NOT publish the proving key publicly** — it's large and only needed by CHRONOS agents.
+**Do NOT publish the proving key publicly**, it's large and only needed by CHRONOS agents.
 
 ### External auditors verify
 

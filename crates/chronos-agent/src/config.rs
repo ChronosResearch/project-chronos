@@ -1,7 +1,7 @@
 //! Agent configuration.
 //!
-//! Mission parameters that the *verifier* must agree on — `T`, the budgets, the
-//! mission ID — are **not** read from here. They come from `mission_public.json`,
+//! Mission parameters that the *verifier* must agree on, `T`, the budgets, the
+//! mission ID, are **not** read from here. They come from `mission_public.json`,
 //! written by `chronos-provision`. Anything the agent could change unilaterally is
 //! not a security parameter, so duplicating `t_vdf_steps` in a local TOML file
 //! would invite the two to disagree, and the artifact is the one the commitments
@@ -49,7 +49,7 @@ pub struct AuthConfig {
     /// Whether to require an authenticated MAC on every request.
     ///
     /// Defaults to `true`. Disabling it is refused unless the API is bound to
-    /// loopback — see [`ChronosConfig::validate`].
+    /// loopback, see [`ChronosConfig::validate`].
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Path to the 32-byte pre-shared operator key.
@@ -90,7 +90,7 @@ pub struct NetworkConfig {
     ///
     /// When `false` the agent uses the provisioned `salt.bin`. The salt must match
     /// what the key was sealed under, so a live fetch only works if the
-    /// provisioner used that same beacon — see the note in `main.rs`.
+    /// provisioner used that same beacon, see the note in `main.rs`.
     #[serde(default)]
     pub fetch_live_beacon: bool,
 }
@@ -132,8 +132,8 @@ impl ChronosConfig {
     ///
     /// Disabling authentication is permitted only on loopback, where the trust
     /// boundary is the machine itself. Binding `0.0.0.0` with `auth.enabled =
-    /// false` would put `/mission/init` — which starts a mission and can be made
-    /// to abort one — in reach of anyone who can route to the host. That is
+    /// false` would put `/mission/init`, which starts a mission and can be made
+    /// to abort one, in reach of anyone who can route to the host. That is
     /// refused at startup rather than warned about, because a warning in a log is
     /// not a control.
     ///
@@ -142,7 +142,7 @@ impl ChronosConfig {
     pub fn validate(&self) -> ChronosResult<()> {
         if self.auth.enabled && self.auth.key_path.is_none() {
             return Err(ChronosError::Config(
-                "auth.enabled is true but auth.key_path is not set — \
+                "auth.enabled is true but auth.key_path is not set, \
                  generate a key with: head -c 32 /dev/urandom > operator.key"
                     .into(),
             ));
