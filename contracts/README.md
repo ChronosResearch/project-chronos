@@ -99,6 +99,22 @@ requires regenerating the key and redeploying.
 
 ## Status
 
-Unaudited, and not yet deployed or tested against a live EVM. The Solidity has
-not been compiled in CI. Before any deployment beyond a testnet: compile with
-`forge build`, run the smoke test above, and get the pairing logic reviewed.
+Unaudited, and not yet deployed or tested against a live EVM.
+
+Both files are compiled on every push and pull request by the `contracts` job in
+`.github/workflows/rust-qa.yml`, under the solc version pinned in
+`foundry.toml`. That is a required check, so the contracts can no longer drift
+into a state where they do not build.
+
+What CI does not do is verify a proof. The verifying key comes from
+`export_solidity`, which needs a setup artifact this repository does not commit,
+so there is no on-chain round trip in the pipeline and the smoke test above is
+still a manual step. Before any deployment beyond a testnet: run that smoke test
+against a deployed pair, and get the pairing logic reviewed by someone who has
+done it before.
+
+To build locally:
+
+```bash
+forge build
+```
