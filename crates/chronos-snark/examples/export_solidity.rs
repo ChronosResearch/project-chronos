@@ -9,7 +9,7 @@
 //!
 //! Two things can go wrong when moving a Groth16 proof on-chain: the proof can be
 //! invalid, or the *encoding* can be wrong. The two failure modes look identical
-//! from Solidity — `verifyProof` returns false — and the encoding bugs are subtle
+//! from Solidity, `verifyProof` returns false, and the encoding bugs are subtle
 //! (arkworks serializes little-endian; the EVM reads big-endian; the pairing
 //! precompile wants Fp2 coordinates as `[c1, c0]`, the reverse of arkworks'
 //! order).
@@ -37,7 +37,7 @@ use chronos_snark::prover::{Groth16Prover, SetupContribution, SetupTranscript};
 use chronos_snark::solidity::{erasure_public_inputs, export_proof, export_verifying_key};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("CHRONOS — Groth16 EVM export");
+    println!("CHRONOS, Groth16 EVM export");
     println!("============================\n");
 
     // ── Trusted setup ────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Native check first ───────────────────────────────────────────────────
     let native_ok = prover.verify_erasure(&proof_bytes, &public_inputs)?;
     if !native_ok {
-        return Err("native verification failed — do not attempt on-chain \
+        return Err("native verification failed, do not attempt on-chain \
                     verification until this passes"
             .into());
     }
@@ -125,11 +125,15 @@ fn build_witness() -> ErasureWitness {
         .expect("encryption of a 32-byte key must succeed");
 
     // A containment run that reaches the terminal state the circuit requires.
-    let mut ledger = ContainmentLedger::new(ContainmentState::new(8, 128, 3600), 32);
+    let mut ledger = ContainmentLedger::new(
+        ContainmentState::without_corrections(8, 128, 3600, 100),
+        32,
+    );
     ledger.admit(Event::MissionInit);
     ledger.admit(Event::Infer {
         declared_secs: 1,
         disclosure_bits: 16,
+        uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
     });
     ledger.admit(Event::KeyReleased);
     ledger.admit(Event::Erase);

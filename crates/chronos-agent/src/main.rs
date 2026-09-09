@@ -6,7 +6,7 @@
 //!
 //! 1. Load the published mission artifact, the sealed key, the salt, the modulus.
 //! 2. Generate FHE keys.
-//! 3. Evaluate the VDF — `T` sequential squarings, interruptible.
+//! 3. Evaluate the VDF, `T` sequential squarings, interruptible.
 //! 4. Verify the VDF proof natively in `O(log T)`.
 //! 5. Derive `K_enc` from `(y, salt)` and open the sealed key.
 //! 6. Check the opened key against the provisioner's `sk_commit`.
@@ -22,20 +22,20 @@
 //! dutifully attested that erased bytes were erased. Since the witness must now
 //! decrypt from the committed ciphertext and match `sk_commit`, the proof has to be
 //! produced while the genuine key is in hand, and the witness wiped immediately
-//! after. Proving after the wipe is no longer merely weak — it is impossible.
+//! after. Proving after the wipe is no longer merely weak, it is impossible.
 //!
 //! **The key lived in unlocked memory.** `sk_plaintext` was cloned into `sk_buf`
 //! and again into `m_pre`, three plain `Vec<u8>` copies of which exactly one was
 //! wiped. The other two dropped into the allocator intact and swappable, directly
 //! contradicting the `F_OS` axiom that Theorem 2 rests on. The key now lives in
-//! [`LockedBytes`] — `mlock`ed, triple-pass wiped on drop — and is never cloned.
+//! [`LockedBytes`], `mlock`ed, triple-pass wiped on drop, and is never cloned.
 //!
 //! **Decryption failure fell back to using the ciphertext as the key.** See
 //! [`crate::crypto`]. Now fatal.
 //!
 //! **The VDF ran four times over.** `evaluate` performs `2T` squarings (`T` for
 //! `y`, `T` for the proof), and the old loop then called `generate_identity_root`,
-//! which ran the entire VDF again — `4T` squarings for a `T`-step mission. EAIP now
+//! which ran the entire VDF again, `4T` squarings for a `T`-step mission. EAIP now
 //! derives its root from the `y` already computed.
 //!
 //! **The watchdog could not stop anything.** It set the state to `Erased` while the
@@ -43,7 +43,7 @@
 //! `evaluate_interruptible` against the state machine's abort flag.
 //!
 //! **The verifying key changed every mission.** Setup ran inside `/mission/init`,
-//! so no external party could ever check a proof — the agent was prover and sole
+//! so no external party could ever check a proof, the agent was prover and sole
 //! verifier, which is not attestation. The proving key is now a persisted artifact.
 //!
 //! # Security posture of the HTTP surface
@@ -54,8 +54,8 @@
 //! wired to the acceptor. Do not expose this to an untrusted network.
 
 // The binary consumes the library rather than re-declaring the modules with
-// `mod`. Declaring them in both places compiles every module twice — once into
-// the lib, once into the bin — which doubles build time and produces spurious
+// `mod`. Declaring them in both places compiles every module twice, once into
+// the lib, once into the bin, which doubles build time and produces spurious
 // dead-code warnings for items the binary happens not to call.
 use chronos_agent::{config, crypto, drand_client, metrics, state, tls};
 
@@ -83,7 +83,7 @@ use chronos_snark::prover::{Groth16Prover, SetupContribution, SetupTranscript};
 use chronos_snark::solidity::{erasure_public_inputs, export_proof_bytes};
 use chronos_vdf::wesolowski::WesolowskiVdf;
 use num_bigint::BigUint;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -93,7 +93,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use config::ChronosConfig;
 use crypto::AUTH_KEY_BYTES;
 use metrics::render_metrics;
-use state::{AgentState, StateMachine};
+use state::{AgentState, StateMachine, UncertaintyState};
 use tls::NonceCache;
 
 /// The completed attestation, published once erasure finishes.
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
             error!(target: "chronos", violation = %v, "containment axiom violated");
         }
         anyhow::bail!(
-            "containment axioms failed verification ({} violations over {} states) — refusing to start",
+            "containment axioms failed verification ({} violations over {} states), refusing to start",
             report.violations.len(),
             report.states_explored
         );
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
         target: "chronos",
         states = report.states_explored,
         transitions = report.transitions_checked,
-        "containment axioms A1-A5 verified"
+        "containment axioms A1-A6 verified"
     );
 
     let cfg = ChronosConfig::load().context("configuration invalid")?;
@@ -196,15 +196,25 @@ async fn main() -> Result<()> {
     } else {
         warn!(
             target: "chronos",
-            "request authentication DISABLED — permitted only because api_addr is loopback"
+            "request authentication DISABLED, permitted only because api_addr is loopback"
         );
         None
     };
+
+    // A7: the correction anchor is refused rather than defaulted if malformed.
+    // Defaulting would silently disable every correction the operator provisioned,
+    // which the agent would experience as "I can never be released", a failure that
+    // looks like a policy decision rather than a config error.
+    let correction_anchor = mission
+        .correction_anchor_bytes()
+        .context("mission artifact has a malformed A7 correction anchor")?;
 
     let sm = StateMachine::new(
         mission.op_budget,
         mission.disclosure_budget_bits,
         mission.t_seconds,
+        mission.autonomy_threshold,
+        correction_anchor,
     );
     let fhe = Arc::new(FheEngine::new());
 
@@ -230,9 +240,9 @@ async fn main() -> Result<()> {
     let shutdown_sm = Arc::clone(&sm);
     let shutdown = async move {
         if let Err(e) = wait_for_shutdown_signal().await {
-            error!(target: "chronos", error = %e, "signal handler failed — shutting down anyway");
+            error!(target: "chronos", error = %e, "signal handler failed, shutting down anyway");
         }
-        warn!(target: "chronos", "shutdown signal — erasing and exiting");
+        warn!(target: "chronos", "shutdown signal, erasing and exiting");
         shutdown_sm.force_erased().await;
     };
 
@@ -240,6 +250,8 @@ async fn main() -> Result<()> {
         .route("/status", get(status_handler))
         .route("/mission/init", post(init_handler))
         .route("/infer", post(infer_handler))
+        .route("/request-veto", post(request_veto_handler))
+        .route("/human-correction", post(human_correction_handler))
         .route("/verify", post(verify_handler))
         .route("/identity/proof", get(identity_proof_handler))
         .route("/attestation", get(attestation_handler))
@@ -404,6 +416,8 @@ struct StatusResponse {
     containment_chain_head: String,
     /// Whether an erasure attestation is available at `/attestation`.
     attested: bool,
+    /// A6 uncertainty trajectory and the threshold it is tested against.
+    uncertainty: UncertaintyState,
 }
 
 async fn status_handler(State(app): State<AppState>) -> Json<StatusResponse> {
@@ -416,6 +430,7 @@ async fn status_handler(State(app): State<AppState>) -> Json<StatusResponse> {
         denied,
         containment_chain_head: app.sm.chain_head_hex().await,
         attested: app.attestation.lock().await.is_some(),
+        uncertainty: app.sm.uncertainty().await,
     })
 }
 
@@ -432,11 +447,11 @@ async fn init_handler(State(app): State<AppState>) -> Response {
 /// The protocol loop. Any failure erases.
 async fn run_mission(app: AppState) {
     if let Err(e) = run_mission_inner(&app).await {
-        error!(target: "chronos", error = %e, "mission failed — erasing");
+        error!(target: "chronos", error = %e, "mission failed, erasing");
         metrics::error_count().inc();
     }
     app.sm.force_erased().await;
-    info!(target: "chronos", "mission complete — agent erased");
+    info!(target: "chronos", "mission complete, agent erased");
 }
 
 async fn run_mission_inner(app: &AppState) -> Result<()> {
@@ -498,7 +513,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     // Wesolowski equation is checked here, cheaply, and the circuit only binds the
     // `y` that was checked.
     if !WesolowskiVdf.verify(&g, &y, &vdf_proof, t, &n) {
-        anyhow::bail!("VDF self-verification failed — refusing to proceed");
+        anyhow::bail!("VDF self-verification failed, refusing to proceed");
     }
     info!(target: "chronos", "VDF complete and self-verified");
 
@@ -509,7 +524,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     // ── 5. Open the sealed key into locked memory ────────────────────────────
     let k_enc = ChronosAead::derive_key(&y_bytes, &salt);
     let opened = ChronosAead::decrypt(&k_enc, &ct)
-        .context("sealed key failed to open — wrong VDF output, wrong salt, or tampered ct_sk")?;
+        .context("sealed key failed to open, wrong VDF output, wrong salt, or tampered ct_sk")?;
     let sk_bytes = poseidon::join32(&[opened[0], opened[1]])
         .context("opened plaintext is not a 32-byte key")?;
 
@@ -525,7 +540,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
     );
     if observed != sk_commit {
         anyhow::bail!(
-            "opened key does not match the mission artifact's sk_commit — \
+            "opened key does not match the mission artifact's sk_commit, \
              the artifact and ct_sk.bin are from different provisioning runs"
         );
     }
@@ -548,7 +563,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
         .context("EAIP initialisation failed")?;
 
     // Prove identity now, while `y` is still available, and cache the proof.
-    // After erasure the witness is gone, so the proof cannot be regenerated —
+    // After erasure the witness is gone, so the proof cannot be regenerated, 
     // which is the intended behaviour, not a limitation.
     {
         let y_for_id = y_bytes.clone();
@@ -573,7 +588,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
             .verify_identity(&id_proof, root)
             .unwrap_or(false)
         {
-            anyhow::bail!("identity proof failed self-verification — refusing to publish it");
+            anyhow::bail!("identity proof failed self-verification, refusing to publish it");
         }
 
         *app.identity_prover.lock().await = Some(id_prover);
@@ -656,7 +671,7 @@ fn load_or_create_prover(path: &str) -> Result<Groth16Prover> {
     warn!(
         target: "chronos",
         %path,
-        "no proving key found — running a SINGLE-PARTY trusted setup. Whoever runs this holds \
+        "no proving key found, running a SINGLE-PARTY trusted setup. Whoever runs this holds \
          the trapdoor and can forge proofs under the resulting key. Replace with a real \
          multi-party ceremony before any deployment where the verifier does not trust this host."
     );
@@ -705,6 +720,7 @@ async fn infer_handler(State(app): State<AppState>, body: Bytes) -> Response {
             declared_secs: 1,
             // One 64-bit output element.
             disclosure_bits: 64,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
         })
         .await;
     if let chronos_core::containment::Decision::Deny(reason) = decision {
@@ -722,6 +738,135 @@ async fn infer_handler(State(app): State<AppState>, body: Bytes) -> Response {
             error!(target: "chronos", error = %e, "inference failed");
             metrics::error_count().inc();
             (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+        }
+    }
+}
+
+// ─── A6: pause and reflect ────────────────────────────────────────────────────
+//
+// Two endpoints, one direction of travel each. `/request-veto` lets the agent
+// record that it has stopped itself; `/human-correction` is the only way net
+// uncertainty falls, and it is reachable only with the operator's key.
+//
+// Neither endpoint accepts an uncertainty *score* from the caller. `/request-veto`
+// reads the current value from the monitor, and `/human-correction` accepts only
+// the amount being resolved. That asymmetry is deliberate: the agent reports how
+// uncertain it is, the operator decides how much of that doubt is answered, and
+// neither can do the other's job.
+//
+// Two independent controls guard `/human-correction`, and both are needed. The
+// request MAC authenticates the *caller*: it covers method, path, nonce and body,
+// so a captured `/request-veto` MAC cannot be replayed here. The A7 grant authorises
+// the *correction itself*: the monitor checks it against the chain anchor the
+// provisioner published, and minting one requires a preimage the agent does not
+// hold. The MAC alone would be insufficient, because the agent runs the process that
+// verifies it, the grant is what the agent cannot fake.
+//
+// What neither buys: honesty of the uncertainty score the agent reports in the first
+// place. That is `F_HONEST-UNCERTAINTY`, see CORRIGIBILITY.md.
+
+/// Response body for both A6 endpoints: the trajectory after the event.
+#[derive(Serialize)]
+struct UncertaintyResponse {
+    /// The A6 trajectory after this event was arbitrated.
+    #[serde(flatten)]
+    uncertainty: UncertaintyState,
+    /// Whether the agent is currently over its autonomy threshold and therefore
+    /// cannot admit an inference carrying any further uncertainty.
+    paused: bool,
+}
+
+impl UncertaintyResponse {
+    fn new(uncertainty: UncertaintyState) -> Self {
+        Self {
+            paused: uncertainty.current >= uncertainty.autonomy_threshold,
+            uncertainty,
+        }
+    }
+}
+
+/// Request body for `/human-correction`: one grant from `correction_grants.json`.
+///
+/// The amount is inside the grant, not a separate field, because it is hashed into
+/// the chain link. Sending it separately would invite a caller to believe it could
+/// be chosen, when in fact altering it invalidates the grant.
+#[derive(Deserialize)]
+struct HumanCorrectionRequest {
+    /// Revealed grant token, hex, 32 bytes.
+    token: String,
+    /// Uncertainty this grant resolves. Must match what the provisioner issued.
+    amount: u64,
+    /// The anchor the chain advances to, hex, 32 bytes.
+    next_anchor: String,
+}
+
+/// Decode a 32-byte hex field, tolerating an optional `0x` prefix.
+fn hex32(field: &str, value: &str) -> Result<[u8; 32], String> {
+    let s = value.strip_prefix("0x").unwrap_or(value);
+    let raw = hex::decode(s).map_err(|e| format!("{field} is not valid hex: {e}"))?;
+    if raw.len() != 32 {
+        return Err(format!("{field} must be 32 bytes, got {}", raw.len()));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Ok(out)
+}
+
+/// Record that the agent is pausing itself pending human guidance (A6).
+///
+/// Takes no body. The uncertainty value written to the ledger is read from the
+/// monitor, so a caller cannot inflate or deflate what gets attested.
+async fn request_veto_handler(State(app): State<AppState>) -> Response {
+    match app.sm.request_human_veto().await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(UncertaintyResponse::new(app.sm.uncertainty().await)),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(target: "chronos", error = %e, "veto request refused by containment monitor");
+            (StatusCode::FORBIDDEN, Json(e.to_string())).into_response()
+        }
+    }
+}
+
+/// Apply operator guidance, resolving accumulated uncertainty (A6).
+///
+/// This is the privileged half of the pair. Reaching it requires a valid MAC over
+/// the body under the pre-shared operator key, which is what stops the agent
+/// resolving its own doubt: the agent has no path to `uncertainty_resolved` that
+/// does not go through a request it cannot forge.
+async fn human_correction_handler(State(app): State<AppState>, body: Bytes) -> Response {
+    let req: HumanCorrectionRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(format!(
+                    "expected {{\"token\": \"0x..\", \"amount\": <u64>, \
+                     \"next_anchor\": \"0x..\"}} from correction_grants.json: {e}"
+                )),
+            )
+                .into_response()
+        }
+    };
+
+    let grant = match (hex32("token", &req.token), hex32("next_anchor", &req.next_anchor)) {
+        (Ok(token), Ok(next_anchor)) => chronos_core::correction::CorrectionGrant {
+            token,
+            amount: req.amount,
+            next_anchor,
+        },
+        (Err(e), _) | (_, Err(e)) => {
+            return (StatusCode::BAD_REQUEST, Json(e)).into_response()
+        }
+    };
+
+    match app.sm.apply_human_correction(grant).await {
+        Ok(after) => (StatusCode::OK, Json(UncertaintyResponse::new(after))).into_response(),
+        Err(e) => {
+            warn!(target: "chronos", error = %e, "human correction refused by containment monitor");
+            (StatusCode::FORBIDDEN, Json(e.to_string())).into_response()
         }
     }
 }
@@ -745,7 +890,7 @@ async fn verify_handler(State(app): State<AppState>, body: Bytes) -> Response {
     let Some(att) = guard.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json("no attestation yet — mission has not completed"),
+            Json("no attestation yet, mission has not completed"),
         )
             .into_response();
     };
@@ -796,7 +941,7 @@ async fn attestation_handler(State(app): State<AppState>) -> Response {
     let Some(att) = guard.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json("no attestation yet — mission has not completed"),
+            Json("no attestation yet, mission has not completed"),
         )
             .into_response();
     };
@@ -825,7 +970,7 @@ async fn attestation_handler(State(app): State<AppState>) -> Response {
                 "An accepted proof shows the prover knew the key that opens the committed \
                  ciphertext under a key derived from the committed VDF output, and that the \
                  containment monitor terminated erased with all capabilities revoked. It does \
-                 NOT show no copy of the key survives — that rests on the F_OS assumption. The \
+                 NOT show no copy of the key survives, that rests on the F_OS assumption. The \
                  trusted setup is single-party, so the setup operator can forge proofs."
                     .into(),
         }),
@@ -858,7 +1003,7 @@ async fn identity_proof_handler(State(app): State<AppState>) -> Response {
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json("identity not established — mission has not reached the VDF output"),
+                Json("identity not established, mission has not reached the VDF output"),
             )
                 .into_response()
         }

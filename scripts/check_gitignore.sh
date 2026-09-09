@@ -5,7 +5,7 @@
 # Why this exists: the legacy Python-era ignore block used unanchored directory
 # patterns (`tests/`, `bin/`, `security/`). An unanchored pattern matches a
 # directory of that name at ANY depth, so `tests/` silently excluded
-# `crates/*/tests/` — the standard location for Cargo integration tests.
+# `crates/*/tests/`, the standard location for Cargo integration tests.
 #
 # The failure mode is quiet and expensive: you add an integration test, commit,
 # push, and CI goes green because the file was never committed. Nothing warns you.
@@ -19,7 +19,7 @@
 
 set -uo pipefail
 
-# Paths that must always be committable. They need not exist — `git check-ignore`
+# Paths that must always be committable. They need not exist, `git check-ignore`
 # is a pure pattern match.
 REQUIRED_PATHS=(
   # Cargo integration tests, one per crate.

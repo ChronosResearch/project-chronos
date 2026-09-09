@@ -7,8 +7,8 @@ use std::ops::Deref;
 ///
 /// On `Drop`, the buffer is triple-pass wiped via [`secure_wipe`] before the
 /// page lock is released.  This struct must be created and held on a **real OS
-/// thread** (i.e. inside `tokio::task::spawn_blocking`) — not directly in an
-/// async task — because the OS associates the mlock with the calling thread's
+/// thread** (i.e. inside `tokio::task::spawn_blocking`), not directly in an
+/// async task, because the OS associates the mlock with the calling thread's
 /// process, and dropping the guard on a different thread is safe but must not
 /// happen across a yield point where another async task might observe freed memory.
 pub struct LockedBytes {
@@ -21,7 +21,7 @@ impl LockedBytes {
     /// Allocates and memory-locks `data`.
     ///
     /// Returns `Err(ChronosError::ExclusivityAssumption)` if the OS refuses
-    /// `mlock` — the caller must treat this as a hard failure.
+    /// `mlock`, the caller must treat this as a hard failure.
     pub fn new(mut data: Vec<u8>) -> ChronosResult<Self> {
         let ptr = data.as_mut_ptr();
         let len = data.len();

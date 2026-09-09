@@ -28,5 +28,5 @@ pub mod solidity;
 pub mod identity_circuit;
 
 /// The published mission artifact. Carries the commitments a verifier holds and
-/// that the agent cannot alter — which is what makes the erasure proof binding.
+/// that the agent cannot alter, which is what makes the erasure proof binding.
 pub mod mission;

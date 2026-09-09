@@ -18,7 +18,7 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 
-# Binaries — no EOL conversion
+# Binaries, no EOL conversion
 *.bin binary
 *.pdf binary
 *.png binary

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 /// @title Groth16 verifier for the CHRONOS erasure circuit
 /// @notice Verifies BN254 Groth16 proofs on-chain using the EVM's alt_bn128
 ///         precompiles. BN254 is the same curve as alt_bn128, which is why the
-///         circuit targets it — proofs are checkable by any Ethereum node with
+///         circuit targets it, proofs are checkable by any Ethereum node with
 ///         no trusted relayer.
 ///
 /// @dev WHAT AN ACCEPTED PROOF DOES AND DOES NOT MEAN
@@ -23,7 +23,7 @@ pragma solidity ^0.8.20;
 ///          capability but erasure-attestation revoked and both budgets at zero.
 ///
 ///      Chained together, that says the agent genuinely held the time-locked key
-///      and obtained it the only way the protocol permits — by completing the VDF.
+///      and obtained it the only way the protocol permits, by completing the VDF.
 ///
 ///      It does NOT mean no copy of the key survives. Two gaps remain:
 ///
@@ -36,8 +36,8 @@ pragma solidity ^0.8.20;
 ///      2. A SNARK constrains values, not memory locations, so the prover supplies
 ///         the post-wipe buffer. The circuit cannot prove the agent retained no
 ///         copy elsewhere in its address space. That residual assumption is
-///         exactly `F_OS` — mlock, no swap, no core dumps, volatile triple-pass
-///         wipe — and nothing more.
+///         exactly `F_OS`, mlock, no swap, no core dumps, volatile triple-pass
+///         wipe, and nothing more.
 ///
 ///      What this contract adds unconditionally: immutability, public timestamps,
 ///      replay resistance per mission, and an audit trail nobody can revise after
@@ -53,7 +53,7 @@ library Pairing {
         uint256 Y;
     }
 
-    /// @dev Fp2 coordinates are stored as [c1, c0] — imaginary part FIRST.
+    /// @dev Fp2 coordinates are stored as [c1, c0], imaginary part FIRST.
     ///      This matches the alt_bn128 precompile's expected encoding and is the
     ///      reverse of arkworks' native (c0, c1) ordering. `solidity.rs` performs
     ///      the swap on export. Getting this backwards produces a verifier that
@@ -157,7 +157,7 @@ library Pairing {
 /// @title CHRONOS Groth16 verifier
 /// @notice Verifying key is injected at construction so the same bytecode can
 ///         serve a re-run trusted setup. `chronos-snark`'s `solidity.rs`
-///         generates the constructor arguments — see `export_verifying_key`.
+///         generates the constructor arguments, see `export_verifying_key`.
 contract Groth16Verifier {
     using Pairing for Pairing.G1Point;
     using Pairing for Pairing.G2Point;
@@ -169,11 +169,11 @@ contract Groth16Verifier {
 
     /// @dev The erasure circuit exposes exactly five public inputs, in this order:
     ///
-    ///        0. yCommit           — Poseidon commitment to the VDF output
-    ///        1. ctCommit          — commitment to the time-locked ciphertext
-    ///        2. skCommit          — commitment to the plaintext secret key
-    ///        3. missionCommit     — commitment to the mission identifier
-    ///        4. containmentCommit — commitment to the containment summary
+    ///        0. yCommit, Poseidon commitment to the VDF output
+    ///        1. ctCommit, commitment to the time-locked ciphertext
+    ///        2. skCommit, commitment to the plaintext secret key
+    ///        3. missionCommit, commitment to the mission identifier
+    ///        4. containmentCommit, commitment to the containment summary
     ///
     ///      Each is a full-width BN254 scalar. An earlier revision exposed two
     ///      *single-byte* values here, so the on-chain verifier's entire binding

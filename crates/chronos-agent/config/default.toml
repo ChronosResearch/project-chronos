@@ -1,6 +1,6 @@
 # Default configuration for the CHRONOS agent.
 #
-# Mission parameters — T, budgets, mission ID — are deliberately NOT here. They
+# Mission parameters, T, budgets, mission ID, are deliberately NOT here. They
 # live in mission_public.json, produced by chronos-provision, because they are the
 # values the erasure proof's commitments were computed under. Duplicating them in
 # a local file the agent can edit would let the two disagree.

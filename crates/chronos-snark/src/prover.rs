@@ -47,7 +47,7 @@
 //! Setup must happen **once** and the verifying key must be **published**. A
 //! previous revision generated a fresh setup inside every `/mission/init`, which
 //! meant the verifying key changed per mission and no external party could ever
-//! check a proof — the agent was both prover and sole verifier, which is not
+//! check a proof, the agent was both prover and sole verifier, which is not
 //! attestation. [`Groth16Prover::save`] and [`Groth16Prover::load`] make the key
 //! a deployment artifact.
 
@@ -243,7 +243,7 @@ impl SetupTranscript {
     pub fn setup_rng(&self) -> ChronosResult<StdRng> {
         if self.records.is_empty() {
             return Err(ChronosError::Snark(
-                "setup transcript is empty — at least one contribution is required; \
+                "setup transcript is empty, at least one contribution is required; \
                  refusing to fall back to an unaudited local seed"
                     .into(),
             ));
@@ -286,7 +286,7 @@ impl Groth16Prover {
     pub fn setup_with_transcript(&mut self, transcript: &SetupTranscript) -> ChronosResult<()> {
         if !transcript.verify_chain() {
             return Err(ChronosError::Snark(
-                "setup transcript chain does not verify — records were altered or reordered".into(),
+                "setup transcript chain does not verify, records were altered or reordered".into(),
             ));
         }
         let mut rng = transcript.setup_rng()?;
@@ -302,7 +302,7 @@ impl Groth16Prover {
     /// Convenience setup for tests and local development.
     ///
     /// Builds a single-contributor transcript. The resulting key must not be used
-    /// where the verifier does not trust this process — that is exactly the
+    /// where the verifier does not trust this process, that is exactly the
     /// single-party case described in the module docs.
     ///
     /// # Errors
@@ -329,7 +329,7 @@ impl Groth16Prover {
 
     /// Serialize the verifying key in arkworks' compressed encoding.
     ///
-    /// This is *not* the EVM encoding — see [`crate::solidity`].
+    /// This is *not* the EVM encoding, see [`crate::solidity`].
     ///
     /// # Errors
     /// Returns [`ChronosError::Snark`] if no keys are loaded or serialization fails.
@@ -344,15 +344,15 @@ impl Groth16Prover {
     fn require_pk(&self) -> ChronosResult<&ProvingKey<Bn254>> {
         self.pk.as_ref().ok_or_else(|| {
             ChronosError::Snark(
-                "proving key not loaded — run setup_with_transcript or load first".into(),
+                "proving key not loaded, run setup_with_transcript or load first".into(),
             )
         })
     }
 
     /// Persist the proving key to `path`.
     ///
-    /// The proving key is not secret — the *setup randomness* is, and it is not
-    /// stored here — but it is large, so this is a deployment artifact rather than
+    /// The proving key is not secret, the *setup randomness* is, and it is not
+    /// stored here, but it is large, so this is a deployment artifact rather than
     /// something to regenerate per mission.
     ///
     /// # Errors
@@ -414,7 +414,7 @@ impl Groth16Prover {
             .map_err(|e| ChronosError::Snark(format!("vk serialization failed: {e}")))?;
         if pk_vk_bytes != vk_bytes {
             return Err(ChronosError::Snark(
-                "verifying key does not match proving key — keys are from different setups".into(),
+                "verifying key does not match proving key, keys are from different setups".into(),
             ));
         }
 
@@ -433,7 +433,7 @@ impl Groth16Prover {
     /// error instead of an unsatisfiable constraint system.
     ///
     /// # Ordering
-    /// This must be called while the agent still holds the genuine key — see the
+    /// This must be called while the agent still holds the genuine key, see the
     /// ordering note in [`crate::circuit`]. Wipe the witness immediately after.
     ///
     /// # Errors
@@ -465,7 +465,7 @@ impl Groth16Prover {
         public_inputs: &PublicInputs,
     ) -> ChronosResult<bool> {
         let pvk = self.pvk.as_ref().ok_or_else(|| {
-            ChronosError::Snark("verifying key not loaded — run setup or load first".into())
+            ChronosError::Snark("verifying key not loaded, run setup or load first".into())
         })?;
         let proof = Proof::<Bn254>::deserialize_compressed(proof_bytes)
             .map_err(|e| ChronosError::Snark(format!("proof deserialization failed: {e}")))?;
@@ -490,7 +490,10 @@ mod tests {
     use chronos_core::containment::{ContainmentLedger, ContainmentState, Event};
 
     fn terminal_ledger() -> ContainmentLedger {
-        let mut l = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut l = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         l.admit(Event::MissionInit);
         l.admit(Event::KeyReleased);
         l.admit(Event::Erase);
@@ -608,9 +611,16 @@ mod tests {
         let proof = p.prove_erasure(&w).expect("proving");
 
         // A different history that still terminates correctly.
-        let mut other = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut other = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         other.admit(Event::MissionInit);
-        other.admit(Event::Infer { declared_secs: 1, disclosure_bits: 4 });
+        other.admit(Event::Infer { 
+            declared_secs: 1, 
+            disclosure_bits: 4,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         other.admit(Event::KeyReleased);
         other.admit(Event::Erase);
         let other_summary = ContainmentSummary::from_ledger(&other);
@@ -626,13 +636,16 @@ mod tests {
     }
 
     /// An agent that ran the mission but never erased cannot produce a proof at
-    /// all — proof-carrying containment in its most important form.
+    /// all, proof-carrying containment in its most important form.
     #[test]
     fn test_no_proof_without_erasure() {
         let p = prover();
         let mut w = witness();
 
-        let mut still_active = ContainmentLedger::new(ContainmentState::new(4, 64, 3600), 16);
+        let mut still_active = ContainmentLedger::new(
+            ContainmentState::without_corrections(4, 64, 3600, 100),
+            16,
+        );
         still_active.admit(Event::MissionInit);
         w.containment = ContainmentSummary::from_ledger(&still_active);
 

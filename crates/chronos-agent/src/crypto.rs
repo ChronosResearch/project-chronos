@@ -17,14 +17,14 @@
 //!
 //! ```ignore
 //! Err(e) => {
-//!     warn!("AES-GCM decrypt failed — using ct_sk as raw key (prototype mode)");
+//!     warn!("AES-GCM decrypt failed, using ct_sk as raw key (prototype mode)");
 //!     ct_sk.clone()
 //! }
 //! ```
 //!
 //! Supplying a `ct_sk.bin` that was not a valid ciphertext therefore caused the
 //! agent to adopt the file's contents *as the key*. The VDF output was never
-//! consulted, so the entire time-lock — the property CHRONOS exists to provide —
+//! consulted, so the entire time-lock, the property CHRONOS exists to provide, 
 //! was bypassed by a malformed input file. Decryption failure is now fatal.
 //!
 //! # Request authentication
@@ -49,7 +49,7 @@
 //! [`NonceCache`]: crate::tls::NonceCache
 //!
 //! This is symmetric and pre-shared, so it authenticates *the operator*, not a
-//! specific individual, and it is not a substitute for mTLS — an eavesdropper still
+//! specific individual, and it is not a substitute for mTLS, an eavesdropper still
 //! sees plaintext requests over HTTP. It closes the "no credential at all" hole;
 //! transport confidentiality remains open and is tracked in the README.
 
@@ -80,7 +80,7 @@ pub async fn read_secret_file<P: AsRef<Path>>(path: P) -> ChronosResult<Vec<u8>>
         let mode = meta.permissions().mode() & 0o777;
         if mode != 0o600 {
             return Err(ChronosError::ExclusivityAssumption(format!(
-                "secret file '{}' has mode {mode:o} — must be 0600. Run: chmod 600 {}",
+                "secret file '{}' has mode {mode:o}, must be 0600. Run: chmod 600 {}",
                 path_ref.display(),
                 path_ref.display()
             )));
@@ -94,7 +94,7 @@ pub async fn read_secret_file<P: AsRef<Path>>(path: P) -> ChronosResult<Vec<u8>>
         tracing::warn!(
             target: "chronos",
             path = %path_ref.display(),
-            "file permission check unavailable on this platform — protect the file with ACLs"
+            "file permission check unavailable on this platform, protect the file with ACLs"
         );
     }
 
@@ -136,7 +136,7 @@ pub async fn load_auth_key<P: AsRef<Path>>(path: P) -> ChronosResult<[u8; AUTH_K
 ///
 /// Fields are length-prefixed rather than delimiter-joined. With a plain `\n`
 /// delimiter, a path containing a newline could shift bytes between fields and
-/// produce the same canonical string from two different requests — a classic
+/// produce the same canonical string from two different requests, a classic
 /// canonicalisation ambiguity. Length prefixes make the encoding injective.
 fn canonical_request(method: &str, path: &str, nonce_hex: &str, body: &[u8]) -> Vec<u8> {
     let body_digest = Sha256::digest(body);
@@ -238,7 +238,7 @@ mod tests {
             verify_request_mac(&KEY, "GET", "/mission/init", NONCE, b"payload", &base).is_err(),
             "method must be bound"
         );
-        // Path substitution — replaying a /status MAC against /mission/init.
+        // Path substitution, replaying a /status MAC against /mission/init.
         assert!(
             verify_request_mac(&KEY, "POST", "/status", NONCE, b"payload", &base).is_err(),
             "path must be bound"

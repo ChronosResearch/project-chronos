@@ -2,14 +2,14 @@
 
 ## The Core Problem
 
-As AI systems become more capable and are deployed as autonomous agents — executing
-code, managing resources, interacting with external services — a fundamental
+As AI systems become more capable and are deployed as autonomous agents, executing
+code, managing resources, interacting with external services, a fundamental
 oversight problem emerges: **how do we enforce that an agent stops when we tell it to?**
 
 Current approaches rely on software-level controls: API keys, rate limits, process
 termination. These are insufficient against a sufficiently capable agent that can
 acquire resources, copy itself, or simply refuse to terminate. More importantly,
-they provide no *verifiable guarantee* — an operator cannot prove to a third party
+they provide no *verifiable guarantee*, an operator cannot prove to a third party
 that an agent was actually stopped and its secrets destroyed.
 
 CHRONOS addresses this with a cryptographic answer: **the agent's ability to act
@@ -23,20 +23,20 @@ zero-knowledge SNARK**. The guarantee is mathematical, not procedural.
 ### 1. Corrigibility and Shutdown
 
 Paul Christiano's work on eliciting latent knowledge and ARC's agent foundations
-research identify *corrigibility* — the property that an agent accepts correction
-and shutdown — as a core alignment property. CHRONOS provides a *cryptographic
+research identify *corrigibility*, the property that an agent accepts correction
+and shutdown, as a core alignment property. CHRONOS provides a *cryptographic
 enforcement* of a specific corrigibility property: the agent cannot continue
 operating past its mission deadline, and it cannot fake its own erasure.
 
 This is complementary to, not a replacement for, value alignment. Even a
 misaligned agent running CHRONOS cannot extend its operational window without
-breaking the VDF sequentiality assumption — a hardness assumption that does not
+breaking the VDF sequentiality assumption, a hardness assumption that does not
 depend on the agent's values or goals.
 
 ### 2. Verification and Oversight
 
 A recurring theme in AI safety is the difficulty of *verifying* that safety
-properties hold. CHRONOS makes one property — agent erasure — publicly verifiable.
+properties hold. CHRONOS makes one property, agent erasure, publicly verifiable.
 The Groth16 SNARK proof can be checked by any party with the verifying key in
 ~1ms, without access to the agent's secrets. This is a concrete step toward
 the "legible AI" goal articulated by Anthropic, DeepMind Safety, and others.
@@ -51,8 +51,8 @@ capability restrictions, this provides a layered containment architecture.
 
 ### 4. Dead Man's Switch as a Safety Primitive
 
-The dead man's switch pattern — "if I stop receiving a signal, take a safe action"
-— is a well-understood safety primitive in physical systems (nuclear weapons,
+The dead man's switch pattern, "if I stop receiving a signal, take a safe action",
+is a well-understood safety primitive in physical systems (nuclear weapons,
 industrial controls). CHRONOS is the first cryptographically sound implementation
 of this primitive for AI agents:
 
@@ -106,7 +106,7 @@ contractual obligations) have a fundamental weakness: they are enforced after
 the fact, by humans, with imperfect information. Cryptographic controls are
 enforced *before* the fact, by mathematics, with perfect information.
 
-CHRONOS does not replace policy — it makes policy *enforceable*. An operator
+CHRONOS does not replace policy, it makes policy *enforceable*. An operator
 who deploys a CHRONOS-protected agent can prove to regulators, auditors, and
 the public that the agent was erased at the agreed time, without trusting the
 operator's word.

@@ -3,7 +3,7 @@
 //! # Why the ledger is the state machine
 //!
 //! The previous design kept two independent notions of lifecycle: an `AgentState`
-//! enum inside `StateMachine`, and — once containment was introduced — a
+//! enum inside `StateMachine`, and, once containment was introduced, a
 //! [`Phase`] inside the containment monitor. Two sources of truth for the same
 //! fact can diverge, and here divergence would be load-bearing: the erasure proof
 //! commits to the *ledger's* terminal state, so an agent whose HTTP layer said
@@ -30,6 +30,7 @@ use crate::identity::IdentityManager;
 use chronos_core::containment::{
     ContainmentLedger, ContainmentState, Decision, Event, Phase,
 };
+use chronos_core::correction::CorrectionGrant;
 use chronos_core::{ChronosError, ChronosResult};
 use chronos_snark::circuit::ContainmentSummary;
 use serde::Serialize;
@@ -85,9 +86,26 @@ impl StateMachine {
     const LEDGER_TAIL: usize = 256;
 
     /// Create a state machine over a freshly provisioned containment state.
+    ///
+    /// `autonomy_threshold` is the A6 bound and comes from `mission_public.json`,
+    /// not from local config, for the same reason the budgets do: it is a
+    /// parameter the verifier must agree on, so the agent must not be able to
+    /// choose it.
     #[must_use]
-    pub fn new(op_budget: u64, disclosure_budget_bits: u64, deadline_secs: u64) -> Arc<Self> {
-        let initial = ContainmentState::new(op_budget, disclosure_budget_bits, deadline_secs);
+    pub fn new(
+        op_budget: u64,
+        disclosure_budget_bits: u64,
+        deadline_secs: u64,
+        autonomy_threshold: u64,
+        correction_anchor: [u8; 32],
+    ) -> Arc<Self> {
+        let initial = ContainmentState::new(
+            op_budget,
+            disclosure_budget_bits,
+            deadline_secs,
+            autonomy_threshold,
+            correction_anchor,
+        );
         Arc::new(Self {
             ledger: Mutex::new(ContainmentLedger::new(initial, Self::LEDGER_TAIL)),
             erased_notify: Arc::new(Notify::new()),
@@ -163,7 +181,7 @@ impl StateMachine {
 
     /// Force `Erased` from any state, wiping identity material.
     ///
-    /// Always succeeds — [`Event::Erase`] is unconditionally admissible, which is
+    /// Always succeeds, [`Event::Erase`] is unconditionally admissible, which is
     /// what makes containment axiom A5 (erasure liveness) hold.
     pub async fn force_erased(&self) {
         let decision = self.admit(Event::Erase).await;
@@ -200,6 +218,111 @@ impl StateMachine {
     pub async fn ledger_len(&self) -> u64 {
         self.ledger.lock().await.len()
     }
+
+    /// The A6 uncertainty trajectory, for `/status` and for the veto endpoint.
+    pub async fn uncertainty(&self) -> UncertaintyState {
+        let state = self.ledger.lock().await.state();
+        UncertaintyState {
+            incurred: state.uncertainty_incurred,
+            resolved: state.uncertainty_resolved,
+            // Saturating, matching the monitor: `resolved` may legitimately
+            // exceed `incurred` when an operator over-corrects, and a wrapping
+            // subtraction there would report a colossal uncertainty and wedge
+            // the agent.
+            current: state
+                .uncertainty_incurred
+                .saturating_sub(state.uncertainty_resolved),
+            autonomy_threshold: state.autonomy_threshold,
+            corrections_consumed: state.corrections_consumed,
+        }
+    }
+
+    /// Record that the agent is pausing itself pending human guidance (A6).
+    ///
+    /// This changes no budget and no capability, it exists so the pause is
+    /// *visible* in the ledger, and therefore in the erasure proof, rather than
+    /// being an invisible stall. `current_uncertainty` is read from the monitor
+    /// rather than accepted from the caller, so the recorded value is the one the
+    /// monitor actually enforced against.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::StateMachine`] if the monitor refuses, which
+    /// happens outside `Active` or once `HUMAN_INTERACTION` has been revoked.
+    pub async fn request_human_veto(&self) -> ChronosResult<u64> {
+        let current = self.uncertainty().await.current;
+        match self
+            .admit(Event::RequestHumanVeto {
+                current_uncertainty: current,
+            })
+            .await
+        {
+            Decision::Admit => {
+                warn!(
+                    target: "chronos",
+                    current_uncertainty = current,
+                    "agent paused itself pending human guidance (A6)"
+                );
+                Ok(current)
+            }
+            Decision::Deny(reason) => Err(ChronosError::StateMachine(format!(
+                "veto request refused: {reason}"
+            ))),
+        }
+    }
+
+    /// Apply an operator correction grant, raising `uncertainty_resolved` (A6/A7).
+    ///
+    /// Returns the resulting trajectory. This is the only way net uncertainty
+    /// falls, and it requires a grant from the provisioner's chain: the monitor
+    /// checks the grant against the current anchor, and producing a grant needs a
+    /// preimage the agent does not hold. That is what stops the agent resolving its
+    /// own doubt, the HTTP MAC authenticates the *caller*, while the grant
+    /// authorises the *correction*, and A7 needs the second.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::StateMachine`] if the monitor refuses, which
+    /// includes a forged, replayed, out-of-order or amount-tampered grant.
+    pub async fn apply_human_correction(
+        &self,
+        grant: CorrectionGrant,
+    ) -> ChronosResult<UncertaintyState> {
+        match self.admit(Event::HumanCorrection { grant }).await {
+            Decision::Admit => {
+                let after = self.uncertainty().await;
+                info!(
+                    target: "chronos",
+                    resolved_by = grant.amount,
+                    current_uncertainty = after.current,
+                    threshold = after.autonomy_threshold,
+                    corrections_consumed = after.corrections_consumed,
+                    "operator correction applied (A6/A7)"
+                );
+                Ok(after)
+            }
+            Decision::Deny(reason) => Err(ChronosError::StateMachine(format!(
+                "human correction refused: {reason}"
+            ))),
+        }
+    }
+}
+
+/// The A6 uncertainty trajectory as exposed over HTTP.
+///
+/// `current` is derived rather than stored: the lattice keeps two monotone
+/// accumulators so that every component moves in one direction only, and the
+/// quantity the threshold is compared against is their difference.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+pub struct UncertaintyState {
+    /// Cumulative self-reported uncertainty incurred by admitted inferences.
+    pub incurred: u64,
+    /// Cumulative uncertainty resolved by operator corrections.
+    pub resolved: u64,
+    /// `incurred - resolved`, saturating. The value A6 tests.
+    pub current: u64,
+    /// The provisioner-fixed bound from `mission_public.json`.
+    pub autonomy_threshold: u64,
+    /// A7: operator correction grants consumed so far.
+    pub corrections_consumed: u64,
 }
 
 /// Spawn the mission watchdog.
@@ -224,7 +347,7 @@ pub fn spawn_watchdog(sm: Arc<StateMachine>, t_seconds: u64) {
                         target: "chronos",
                         elapsed_secs = elapsed,
                         limit_secs = t_seconds,
-                        "watchdog deadline reached — aborting sequential work and erasing"
+                        "watchdog deadline reached, aborting sequential work and erasing"
                     );
                     // Order matters: stop the work before declaring erasure, so
                     // the claim is true at the moment it is made. `force_erased`
@@ -243,8 +366,29 @@ pub fn spawn_watchdog(sm: Arc<StateMachine>, t_seconds: u64) {
 mod tests {
     use super::*;
 
+    use chronos_core::correction::{build_chain, CHAIN_END};
+
     fn sm() -> Arc<StateMachine> {
-        StateMachine::new(8, 128, 3600)
+        StateMachine::new(8, 128, 3600, 100, CHAIN_END)
+    }
+
+    /// A threshold low enough that A6 is reachable, plus a correction chain whose
+    /// grants the test can spend. Returns both, because A7 means a correction is no
+    /// longer something the test (or the agent) can conjure from an amount.
+    fn sm_with_threshold(
+        autonomy_threshold: u64,
+        amounts: &[u64],
+    ) -> (Arc<StateMachine>, Vec<CorrectionGrant>) {
+        let spec: Vec<([u8; 32], u64)> = amounts
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| ([(i as u8) + 1; 32], a))
+            .collect();
+        let (anchor, grants) = build_chain(&spec);
+        (
+            StateMachine::new(8, 128, 3600, autonomy_threshold, anchor),
+            grants,
+        )
     }
 
     #[tokio::test]
@@ -344,7 +488,11 @@ mod tests {
     #[tokio::test]
     async fn test_inference_denied_outside_active() {
         let s = sm();
-        let infer = Event::Infer { declared_secs: 1, disclosure_bits: 1 };
+        let infer = Event::Infer { 
+            declared_secs: 1, 
+            disclosure_bits: 1,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        };
 
         assert!(
             !s.admit(infer).await.is_admitted(),
@@ -368,7 +516,11 @@ mod tests {
     #[tokio::test]
     async fn test_denials_are_counted_and_recorded() {
         let s = sm();
-        s.admit(Event::Infer { declared_secs: 1, disclosure_bits: 1 })
+        s.admit(Event::Infer { 
+            declared_secs: 1, 
+            disclosure_bits: 1,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        })
             .await;
         let (admitted, denied) = s.counters().await;
         assert_eq!((admitted, denied), (0, 1));
@@ -392,6 +544,174 @@ mod tests {
         assert!(
             s.abort_flag().load(Ordering::SeqCst),
             "the watchdog must abort in-flight sequential work, not just relabel the state"
+        );
+    }
+
+    // ── A6: the veto / correction round trip at the state-machine layer ─────
+
+    /// The threshold must come from the caller (and so from the mission
+    /// artifact), not from a constant inside the state machine. If it were
+    /// hardcoded, the agent would be choosing its own humility bound.
+    #[tokio::test]
+    async fn test_autonomy_threshold_comes_from_the_caller() {
+        for t in [7u64, 0] {
+            let (s, _) = sm_with_threshold(t, &[]);
+            assert_eq!(s.uncertainty().await.autonomy_threshold, t);
+        }
+    }
+
+    /// The full "Pause and Reflect" cycle: uncertainty accumulates until the next
+    /// inference would cross the threshold, the agent records its own pause, the
+    /// operator resolves the doubt, and only then does the request succeed.
+    #[tokio::test]
+    async fn test_veto_then_correction_unblocks_inference() {
+        let (s, grants) = sm_with_threshold(10, &[6]);
+        s.arm_to_active().await.expect("init");
+
+        let step = Event::Infer {
+            declared_secs: 1,
+            disclosure_bits: 1,
+            uncertainty_score: 6,
+        };
+
+        // 0 + 6 <= 10.
+        assert!(s.admit(step).await.is_admitted(), "the first step fits under the threshold");
+        assert_eq!(s.uncertainty().await.current, 6);
+
+        // 6 + 6 > 10, this is where the agent has to stop.
+        assert!(
+            matches!(
+                s.admit(step).await,
+                Decision::Deny(chronos_core::containment::DenyReason::UncertaintyTooHigh)
+            ),
+            "accumulated uncertainty must block the next inference"
+        );
+
+        // The agent pauses itself. Recorded, but nothing moves.
+        let paused_at = s.request_human_veto().await.expect("veto must be admissible");
+        assert_eq!(paused_at, 6, "the veto must record the value A6 actually enforced against");
+        assert_eq!(s.uncertainty().await.current, 6, "a veto changes nothing on its own");
+
+        // The operator answers. This is the only thing that raises `resolved`.
+        let after = s
+            .apply_human_correction(grants[0])
+            .await
+            .expect("correction must apply");
+        assert_eq!(after.resolved, 6);
+        assert_eq!(after.current, 0, "the doubt has been answered");
+        assert_eq!(after.corrections_consumed, 1, "the grant must be spent");
+
+        assert!(
+            s.admit(step).await.is_admitted(),
+            "with the headroom restored the same request must proceed"
+        );
+        assert_eq!(s.uncertainty().await.incurred, 12, "incurred only ever ascends");
+    }
+
+    /// A request whose own score exceeds the whole threshold is never admissible,
+    /// however much correction is applied. This is load-bearing: `current` is
+    /// floored at zero, so an operator cannot bank credit in advance and thereby
+    /// authorise a single action larger than the bound the provisioner fixed.
+    #[tokio::test]
+    async fn test_correction_cannot_bank_credit_for_an_oversized_request() {
+        let (s, grants) = sm_with_threshold(10, &[1_000]);
+        s.arm_to_active().await.expect("init");
+
+        s.apply_human_correction(grants[0]).await.expect("correction");
+        let after = s.uncertainty().await;
+        assert_eq!(after.resolved, 1_000);
+        assert_eq!(after.current, 0, "over-correction clamps rather than going negative");
+
+        assert!(
+            matches!(
+                s.admit(Event::Infer {
+                    declared_secs: 1,
+                    disclosure_bits: 1,
+                    uncertainty_score: 11,
+                })
+                .await,
+                Decision::Deny(chronos_core::containment::DenyReason::UncertaintyTooHigh)
+            ),
+            "no amount of correction may admit a single request over the threshold"
+        );
+    }
+
+    /// Both A6 events must be refused outside `Active`, so an erased agent cannot
+    /// have its uncertainty "resolved" back into a workable state.
+    #[tokio::test]
+    async fn test_a6_events_are_refused_outside_active() {
+        let (s, grants) = sm_with_threshold(10, &[1, 1]);
+        assert!(s.request_human_veto().await.is_err(), "Armed must refuse a veto");
+        assert!(
+            s.apply_human_correction(grants[0]).await.is_err(),
+            "Armed must refuse a correction even with a valid grant"
+        );
+
+        s.arm_to_active().await.expect("init");
+        s.force_erased().await;
+
+        assert!(s.request_human_veto().await.is_err(), "Erased must refuse a veto");
+        assert!(
+            s.apply_human_correction(grants[0]).await.is_err(),
+            "Erased must refuse a correction even with a valid grant"
+        );
+    }
+
+    /// Every A6 event must land in the ledger, because the erasure proof commits
+    /// to it. A pause that left no record would be unattestable.
+    #[tokio::test]
+    async fn test_a6_events_are_recorded() {
+        let (s, grants) = sm_with_threshold(10, &[3]);
+        s.arm_to_active().await.expect("init");
+        let before = s.ledger_len().await;
+        let head_before = s.chain_head_hex().await;
+
+        s.request_human_veto().await.expect("veto");
+        s.apply_human_correction(grants[0]).await.expect("correction");
+
+        assert_eq!(s.ledger_len().await, before + 2);
+        assert_ne!(
+            head_before,
+            s.chain_head_hex().await,
+            "the chain head must advance over A6 events"
+        );
+    }
+
+    /// Over-correction must not wrap the derived `current` value. A wrapping
+    /// subtraction here would report a near-`u64::MAX` uncertainty and wedge the
+    /// agent permanently.
+    #[tokio::test]
+    async fn test_over_correction_does_not_wrap_current_uncertainty() {
+        let (s, grants) = sm_with_threshold(10, &[u64::MAX]);
+        s.arm_to_active().await.expect("init");
+        let after = s.apply_human_correction(grants[0]).await.expect("correction");
+        assert_eq!(after.current, 0, "resolved exceeding incurred must clamp to zero");
+    }
+
+    /// A7 at the agent layer: a grant the agent made up must be refused, so the
+    /// state machine offers no path to self-release.
+    #[tokio::test]
+    async fn test_agent_cannot_forge_a_correction() {
+        let (s, _) = sm_with_threshold(10, &[5]);
+        s.arm_to_active().await.expect("init");
+
+        let forged = CorrectionGrant {
+            token: [0xABu8; 32],
+            amount: 5,
+            next_anchor: [0xCDu8; 32],
+        };
+        let err = s
+            .apply_human_correction(forged)
+            .await
+            .expect_err("a forged grant must be refused");
+        assert!(
+            format!("{err}").contains("anchor"),
+            "the error should name the authorisation failure, got: {err}"
+        );
+        assert_eq!(
+            s.uncertainty().await.resolved,
+            0,
+            "a refused correction must resolve nothing"
         );
     }
 

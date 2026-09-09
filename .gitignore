@@ -47,7 +47,7 @@ package-lock.json
 Thumbs.db
 desktop.ini
 
-# ── Secrets — never commit ────────────────────────────────────────────────────
+# ── Secrets, never commit ─────────────────────────────────────────────────────
 .env
 .env.*
 *.pem
@@ -57,6 +57,12 @@ desktop.ini
 secrets.toml
 certN.bin
 ct_sk.bin
+# A7 correction grants. Written by chronos-provision for the OPERATOR, never for
+# the agent: a grant is the authority to resolve the agent's uncertainty, so
+# publishing the file hands that authority to anyone who reads the repository and
+# defeats A7 entirely. Not anchored, because provisioning with `--out-dir .`
+# writes it to the repository root while `--out-dir ./mission` does not.
+correction_grants.json
 
 # ── Build artifacts & installers ──────────────────────────────────────────────
 *.exe
@@ -87,7 +93,7 @@ generate_pdf.py
 real_results.md
 job_log.txt
 
-# ── Internal tooling — not for public repo ────────────────────────────────────
+# ── Internal tooling, not for public repo ────────────────────────────────────
 .agents/
 ..agents/
 lightcone_application.md
@@ -119,7 +125,7 @@ perf.data.old
 flamegraph.svg
 
 # ── Old Python prototype files (removed from tracking, kept locally) ─────────
-# These are the original Python PoC files — they live on disk but don't belong
+# These are the original Python PoC files, they live on disk but don't belong
 # in the repository now that we have the Rust codebase.
 chronos_agent.py
 fhe_engine.py
@@ -136,7 +142,7 @@ generate_pdf.py
 # directory of that name at ANY depth, which silently excluded standard Cargo
 # layouts: `tests/` blocked `crates/*/tests/` (integration tests) and `security/`
 # blocked `crates/*/src/security/`. Files already tracked were unaffected, so the
-# breakage only showed up for newly added files — and showed up as CI passing
+# breakage only showed up for newly added files, and showed up as CI passing
 # because the test file was never committed.
 /python/
 /security/
@@ -156,8 +162,8 @@ requirements.txt
 release-please-config.json
 docker-compose.yml
 # Root-anchored. Unanchored, `index.html` and `.nojekyll` match at any depth and
-# silently excluded `docs/index.html` and `docs/.nojekyll` — the GitHub Pages
-# site — which is the same failure mode documented for `/tests/` above.
+# silently excluded `docs/index.html` and `docs/.nojekyll`, the GitHub Pages
+# site, which is the same failure mode documented for `/tests/` above.
 /index.html
 /.nojekyll
 .pre-commit-config.yaml
@@ -206,7 +212,7 @@ test-results.txt
 # ── Mission artifacts ─────────────────────────────────────────────────────────
 # `ct_sk.bin` and `certN.bin` are named explicitly above; `*.bin` also covers
 # `salt.bin` and the persisted `erasure_pk.bin` proving key, which is large and
-# regenerable. Note that `mission_public.json` is deliberately NOT ignored — it
+# regenerable. Note that `mission_public.json` is deliberately NOT ignored, it
 # holds only public commitments and is meant to be published alongside the paper.
 /mission/
 erasure_pk.bin
@@ -215,7 +221,7 @@ operator.key
 
 # ── Paper source, kept local ──────────────────────────────────────────────────
 # The LaTeX source and its build output stay on disk and out of the repository.
-# Remove this entry if the paper should be versioned alongside the artifact —
+# Remove this entry if the paper should be versioned alongside the artifact, 
 # `*.aux`, `*.log`, `*.out`, `*.toc` and `*.pdf` are already ignored above, so
 # only the `.tex` would need tracking.
 /paper/

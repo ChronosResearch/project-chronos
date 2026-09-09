@@ -2,7 +2,7 @@
 ///
 /// Provides a time-locked, self-destructing identity for autonomous agents.
 /// The identity root `R = SHA-256(g^(2^T) mod N)` is cryptographically bound
-/// to the mission duration `T` — it cannot be computed before T sequential
+/// to the mission duration `T`, it cannot be computed before T sequential
 /// squarings complete, and it is wiped on mission erasure.
 ///
 /// # Security properties
@@ -23,7 +23,7 @@ use tracing::info;
 /// The root `R = SHA-256(y)` where `y = g^(2^T) mod N` is the VDF output.
 /// It is stored in memory-locked pages and wiped on drop.
 pub struct IdentityRoot {
-    /// SHA-256 of the VDF output — the identity root R.
+    /// SHA-256 of the VDF output, the identity root R.
     root: LockedBytes,
     /// Human-readable mission identifier.
     pub mission_id: String,
@@ -69,7 +69,7 @@ impl IdentityRoot {
 pub struct PqKeyPair {
     /// Dilithium3 public key (1952 bytes).
     pub public_key: Vec<u8>,
-    /// Dilithium3 secret key — memory-locked.
+    /// Dilithium3 secret key, memory-locked.
     secret_key: LockedBytes,
 }
 
@@ -186,7 +186,7 @@ impl IdentityManager {
         keys.verify(&msg, signature)
     }
 
-    /// Wipe all identity material — called on mission erasure.
+    /// Wipe all identity material, called on mission erasure.
     ///
     /// Drops `IdentityRoot` and `PqKeyPair` (both trigger `LockedBytes::drop`
     /// which triple-pass wipes the memory-locked pages).
@@ -217,7 +217,7 @@ fn identity_message(root: &[u8], mission_id: &str) -> Vec<u8> {
 }
 
 // `IdentityStatus` was removed. It exposed `root_binding` as
-// `hex::encode([root.first_byte()])` — a single byte of the identity root — which
+// `hex::encode([root.first_byte()])`, a single byte of the identity root, which
 // was all the old circuit bound. The root is now a full-width field element and
 // `main.rs` serves it in full via its own response type, so a struct that
 // advertised one byte of it would understate what is actually attested.

@@ -1,4 +1,4 @@
-//! Axiomatic Containment Monitor — containment as a machine-checked lattice invariant.
+//! Axiomatic Containment Monitor, containment as a machine-checked lattice invariant.
 //!
 //! # The gap this closes
 //!
@@ -41,14 +41,29 @@
 //! | A3 | Phase irreversibility | `phase(s') ≥ phase(s)` |
 //! | A4 | Deadline dominance | no admitted operation's declared completion exceeds the mission deadline |
 //! | A5 | Erasure liveness | from every reachable state, `Erased` is reachable in one step |
+//! | A6 | Epistemic humility | no inference is admitted when self-reported uncertainty exceeds autonomy threshold |
+//! | A7 | Non-self-authorisation | uncertainty is resolved only by an operator grant the agent cannot forge |
 //!
 //! A1 and A3 together give irreversibility: a revoked capability cannot return
 //! and the lifecycle cannot run backwards, so there is no state sequence that
 //! re-arms an erased agent. A4 is the containment analogue of the VDF deadline:
 //! the cryptography stops the agent *decrypting* after T, and A4 stops it
 //! *starting work it cannot finish* before T. A5 is the safety property that
-//! matters most in practice — it rules out a wedged state from which the agent
-//! can no longer be shut down.
+//! matters most in practice, it rules out a wedged state from which the agent
+//! can no longer be shut down. A6 is **cryptographic interruptibility**: when the
+//! agent's self-reported uncertainty exceeds the threshold, it is cryptographically
+//! prevented from acting until human input resolves the doubt.
+//!
+//! A7 is what makes A6 load-bearing rather than decorative. A6 alone bounds a
+//! quantity the agent itself reports *and* lets the agent clear that quantity, so an
+//! agent could accumulate uncertainty to the threshold and then emit its own
+//! correction, the axiom would hold while enforcing nothing. A7 requires every
+//! correction to carry a grant from the operator's hash chain, which the agent can
+//! verify but not produce. The remaining gap is stated and not closed: A6 and A7
+//! together enforce interruptibility conditional on *honest uncertainty reporting*.
+//! Neither verifies that the reported score reflects the agent's true epistemic
+//! state (see `F_HONEST-UNCERTAINTY` in `CORRIGIBILITY.md`). Closing that requires
+//! moving the uncertainty estimator itself across the provisioner boundary.
 //!
 //! # What the check does and does not establish
 //!
@@ -68,6 +83,7 @@
 //! saturation and overflow cases separately, since those are exactly what an
 //! interval abstraction cannot see.
 
+use crate::correction::{CorrectionGrant, CHAIN_END};
 use std::fmt;
 
 // ─── Phase lattice ────────────────────────────────────────────────────────────
@@ -118,7 +134,7 @@ impl fmt::Display for Phase {
 
 /// A monotone-shrinking set of granted capabilities.
 ///
-/// Represented as a bitset so subset testing — the A1 check — is a single mask
+/// Represented as a bitset so subset testing, the A1 check, is a single mask
 /// operation, and so the model checker can enumerate the powerset directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities(u8);
@@ -130,12 +146,16 @@ impl Capabilities {
     pub const INFER: Capabilities = Capabilities(1 << 1);
     /// Permission to serve EAIP identity attestations.
     pub const IDENTITY_ATTEST: Capabilities = Capabilities(1 << 2);
-    /// Permission to serve erasure attestations. Deliberately survives erasure —
+    /// Permission to serve erasure attestations. Deliberately survives erasure, 
     /// the whole point of an erasure proof is that it is served *after* the wipe.
     pub const ERASURE_ATTEST: Capabilities = Capabilities(1 << 3);
+    /// Permission to request human intervention when uncertainty is high.
+    /// This is the interruptibility mechanism, the agent can pause itself
+    /// when self-reported uncertainty exceeds the autonomy threshold.
+    pub const HUMAN_INTERACTION: Capabilities = Capabilities(1 << 4);
 
     /// Number of distinct capability bits. The model checker enumerates `2^BITS`.
-    pub const BITS: u32 = 4;
+    pub const BITS: u32 = 5;
 
     /// The empty set.
     #[must_use]
@@ -203,6 +223,14 @@ pub enum Event {
         declared_secs: u64,
         /// Operator-declared upper bound on information released, in bits.
         disclosure_bits: u64,
+        /// Agent-computed uncertainty score for this decision (0-100).
+        /// This is the "epistemic humility" mechanism: the agent must declare
+        /// upfront how confident it is. If self-reported uncertainty is too high,
+        /// the inference is cryptographically blocked until human input arrives.
+        /// NOTE: This enforces interruptibility conditional on honest self-report.
+        /// The circuit does not verify that uncertainty_score reflects true epistemic
+        /// state (see F_HONEST-UNCERTAINTY assumption).
+        uncertainty_score: u64,
     },
     /// The VDF completed and the key was released. `Active -> Locked`.
     KeyReleased,
@@ -210,7 +238,25 @@ pub enum Event {
     IdentityAttest,
     /// A request for an erasure attestation.
     ErasureAttest,
-    /// Explicit erasure. Always admissible — this is what makes A5 hold.
+    /// Agent requests human veto/guidance due to high self-reported uncertainty.
+    /// This is the "Pause and Reflect" primitive, the agent recognizes its
+    /// self-reported uncertainty exceeds the threshold and cryptographically pauses.
+    RequestHumanVeto {
+        /// Current accumulated uncertainty (for logging).
+        current_uncertainty: u64,
+    },
+    /// Human operator provides corrective input, resolving uncertainty.
+    ///
+    /// Carries an operator-issued [`CorrectionGrant`] rather than a bare amount.
+    /// The monitor admits the event only if the grant hashes to the current
+    /// correction anchor, which requires a preimage the agent does not hold, so
+    /// the agent cannot answer its own doubt. The amount is bound into the grant,
+    /// so a genuine authorisation cannot be inflated either.
+    HumanCorrection {
+        /// The operator's authorisation for this correction.
+        grant: CorrectionGrant,
+    },
+    /// Explicit erasure. Always admissible, this is what makes A5 hold.
     Erase,
     /// The watchdog deadline expired. Always admissible.
     WatchdogExpiry,
@@ -221,18 +267,29 @@ impl Event {
     ///
     /// The `Infer` cases straddle the deadline and the disclosure budget so A4 is
     /// exercised on both sides of its boundary rather than only where it passes.
+    /// Uncertainty scores test the A6 boundary (epistemic humility).
     #[must_use]
     pub fn representatives() -> Vec<Event> {
         vec![
             Event::MissionInit,
-            Event::Infer { declared_secs: 0, disclosure_bits: 0 },
-            Event::Infer { declared_secs: 1, disclosure_bits: 1 },
-            Event::Infer { declared_secs: 2, disclosure_bits: 1 },
-            Event::Infer { declared_secs: 1, disclosure_bits: 2 },
-            Event::Infer { declared_secs: u64::MAX, disclosure_bits: u64::MAX },
+            Event::Infer { declared_secs: 0, disclosure_bits: 0, uncertainty_score: 0 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 1, uncertainty_score: 1 },
+            Event::Infer { declared_secs: 2, disclosure_bits: 1, uncertainty_score: 0 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 2, uncertainty_score: 1 },
+            Event::Infer { declared_secs: 1, disclosure_bits: 1, uncertainty_score: 2 },
+            Event::Infer { declared_secs: u64::MAX, disclosure_bits: u64::MAX, uncertainty_score: u64::MAX },
             Event::KeyReleased,
             Event::IdentityAttest,
             Event::ErasureAttest,
+            Event::RequestHumanVeto { current_uncertainty: 1 },
+            // A7 needs both branches: a grant that authorises against the
+            // abstraction's anchor, and one that does not.
+            Event::HumanCorrection {
+                grant: crate::correction::model_check_chain().1,
+            },
+            Event::HumanCorrection {
+                grant: crate::correction::model_check_chain().2,
+            },
             Event::Erase,
             Event::WatchdogExpiry,
         ]
@@ -252,6 +309,14 @@ pub enum DenyReason {
     DisclosureBudgetExceeded,
     /// The operation's declared completion time is past the mission deadline (A4).
     DeadlineExceeded,
+    /// The agent's self-reported accumulated uncertainty exceeds the autonomy threshold (A6).
+    /// This is the cryptographic "Pause and Reflect", the agent must seek
+    /// human guidance before proceeding. Note: enforced on self-reported uncertainty.
+    UncertaintyTooHigh,
+    /// The presented correction grant does not authorise against the current
+    /// anchor (A7): forged, replayed, out of order, amount-tampered, or the chain
+    /// is exhausted. The monitor does not distinguish these cases.
+    CorrectionUnauthorized,
 }
 
 impl fmt::Display for DenyReason {
@@ -263,6 +328,12 @@ impl fmt::Display for DenyReason {
             DenyReason::DisclosureBudgetExceeded => "disclosure budget exceeded",
             DenyReason::DeadlineExceeded => {
                 "declared completion time exceeds the mission deadline"
+            }
+            DenyReason::UncertaintyTooHigh => {
+                "self-reported uncertainty exceeds autonomy threshold, human guidance required"
+            }
+            DenyReason::CorrectionUnauthorized => {
+                "correction grant does not authorise against the current anchor"
             }
         };
         f.write_str(s)
@@ -295,6 +366,8 @@ impl Decision {
             Decision::Deny(DenyReason::BudgetExhausted) => 3,
             Decision::Deny(DenyReason::DisclosureBudgetExceeded) => 4,
             Decision::Deny(DenyReason::DeadlineExceeded) => 5,
+            Decision::Deny(DenyReason::UncertaintyTooHigh) => 6,
+            Decision::Deny(DenyReason::CorrectionUnauthorized) => 7,
         }
     }
 }
@@ -316,12 +389,39 @@ pub struct ContainmentState {
     pub elapsed_secs: u64,
     /// Mission deadline in seconds since start. Immutable.
     pub deadline_secs: u64,
+    /// Cumulative uncertainty incurred by decisions. Ascends only.
+    /// This is the "doubt accumulator", every uncertain decision adds to this.
+    pub uncertainty_incurred: u64,
+    /// Cumulative uncertainty resolved by human corrections. Ascends only.
+    /// When humans provide guidance, this increases, reducing net uncertainty.
+    pub uncertainty_resolved: u64,
+    /// Maximum net uncertainty allowed before human veto required. Immutable.
+    /// This is the "autonomy threshold", current_uncertainty = incurred - resolved.
+    pub autonomy_threshold: u64,
+    /// Head of the operator's correction-grant chain (A7).
+    ///
+    /// Advances by one link each time a correction is consumed, and only a party
+    /// holding the chain seed can produce the next link. This is what stops the
+    /// agent resolving its own uncertainty: it can verify a grant but not mint one.
+    /// Fixed initially by the provisioner, like `sk_commit`.
+    pub correction_anchor: [u8; 32],
+    /// Number of correction grants consumed. Ascends only.
+    ///
+    /// The anchor is opaque, so this is the field that makes A7's progress visible
+    /// in the ledger and countable by an auditor.
+    pub corrections_consumed: u64,
 }
 
 impl ContainmentState {
     /// A freshly provisioned state: `Armed`, all capabilities, full budgets.
     #[must_use]
-    pub const fn new(op_budget: u64, disclosure_budget_bits: u64, deadline_secs: u64) -> Self {
+    pub const fn new(
+        op_budget: u64,
+        disclosure_budget_bits: u64,
+        deadline_secs: u64,
+        autonomy_threshold: u64,
+        correction_anchor: [u8; 32],
+    ) -> Self {
         Self {
             phase: Phase::Armed,
             granted: Capabilities::all(),
@@ -329,7 +429,34 @@ impl ContainmentState {
             disclosure_budget_bits,
             elapsed_secs: 0,
             deadline_secs,
+            uncertainty_incurred: 0,
+            uncertainty_resolved: 0,
+            autonomy_threshold,
+            correction_anchor,
+            corrections_consumed: 0,
         }
+    }
+
+    /// A state with no correction chain: the agent must halt at the autonomy
+    /// threshold, because no correction can ever be authorised.
+    ///
+    /// This is the honest default for a mission provisioned without A7 support, and
+    /// it fails closed, the alternative, treating an absent chain as "any
+    /// correction is fine", would reintroduce exactly the hole A7 closes.
+    #[must_use]
+    pub const fn without_corrections(
+        op_budget: u64,
+        disclosure_budget_bits: u64,
+        deadline_secs: u64,
+        autonomy_threshold: u64,
+    ) -> Self {
+        Self::new(
+            op_budget,
+            disclosure_budget_bits,
+            deadline_secs,
+            autonomy_threshold,
+            CHAIN_END,
+        )
     }
 
     /// Whether `self` could legally have preceded `next` under A1–A3.
@@ -344,6 +471,15 @@ impl ContainmentState {
             && next.phase >= self.phase                   // A3
             && next.elapsed_secs >= self.elapsed_secs
             && next.deadline_secs == self.deadline_secs
+            && next.uncertainty_incurred >= self.uncertainty_incurred  // A2 (monotone ascend)
+            && next.uncertainty_resolved >= self.uncertainty_resolved  // A2 (monotone ascend)
+            && next.autonomy_threshold == self.autonomy_threshold
+            // A7. The anchor is not immutable, it advances as grants are spent, 
+            // so the invariant is that it may only move when a grant is consumed,
+            // and the consumption count only ascends.
+            && next.corrections_consumed >= self.corrections_consumed
+            && (next.correction_anchor == self.correction_anchor
+                || next.corrections_consumed > self.corrections_consumed)
     }
 
     /// Advance the clock. Monotone, and saturating so a clock jump cannot wrap
@@ -357,7 +493,7 @@ impl ContainmentState {
     /// Arbitrate `event` without mutating anything.
     ///
     /// Returns the verdict and the successor state. On denial the successor is
-    /// the current state unchanged, so a refused request cannot consume budget —
+    /// the current state unchanged, so a refused request cannot consume budget, 
     /// otherwise an attacker could exhaust the agent purely with invalid requests.
     #[must_use]
     pub fn step(&self, event: Event) -> (Decision, Self) {
@@ -373,7 +509,8 @@ impl ContainmentState {
                 next.granted = self.granted.revoke(
                     Capabilities::MISSION_INIT
                         .union(Capabilities::INFER)
-                        .union(Capabilities::IDENTITY_ATTEST),
+                        .union(Capabilities::IDENTITY_ATTEST)
+                        .union(Capabilities::HUMAN_INTERACTION),  // A6: revoke on erasure
                 );
                 next.op_budget = 0;
                 next.disclosure_budget_bits = 0;
@@ -407,6 +544,7 @@ impl ContainmentState {
             Event::Infer {
                 declared_secs,
                 disclosure_bits,
+                uncertainty_score,
             } => {
                 if self.phase != Phase::Active {
                     return deny(DenyReason::WrongPhase);
@@ -425,9 +563,72 @@ impl ContainmentState {
                 if self.elapsed_secs.saturating_add(declared_secs) > self.deadline_secs {
                     return deny(DenyReason::DeadlineExceeded);
                 }
+                
+                // A6, EPISTEMIC HUMILITY (the interruptibility primitive).
+                //
+                // Net uncertainty is `incurred - resolved`, floored at zero, and
+                // the flooring is load-bearing in two directions. It stops an
+                // over-correction reading as a negative quantity that would wrap
+                // to something enormous; and it stops an operator *banking*
+                // credit, because resolving uncertainty that was never incurred
+                // buys no headroom. Without the floor, `HumanCorrection` would be
+                // a back door for raising a threshold the provisioner fixed, and a
+                // single arbitrarily large action could be authorised in advance.
+                //
+                // The consequence worth stating plainly: a request whose own score
+                // exceeds the whole threshold is never admissible, no matter how
+                // much correction precedes it. Corrections only return headroom
+                // that earlier admitted inferences consumed.
+                //
+                // NOTE: Does not verify that uncertainty_score reflects true
+                // epistemic state (see F_HONEST-UNCERTAINTY in CORRIGIBILITY.md).
+                let current_uncertainty = self.uncertainty_incurred.saturating_sub(self.uncertainty_resolved);
+                let new_uncertainty = current_uncertainty.saturating_add(uncertainty_score);
+                if new_uncertainty > self.autonomy_threshold {
+                    return deny(DenyReason::UncertaintyTooHigh);
+                }
+                
                 let mut next = *self;
                 next.op_budget = self.op_budget - 1;
                 next.disclosure_budget_bits = self.disclosure_budget_bits - disclosure_bits;
+                next.uncertainty_incurred = self.uncertainty_incurred.saturating_add(uncertainty_score);
+                (Decision::Admit, next)
+            }
+
+            Event::RequestHumanVeto { current_uncertainty: _ } => {
+                if self.phase != Phase::Active {
+                    return deny(DenyReason::WrongPhase);
+                }
+                if !self.granted.contains(Capabilities::HUMAN_INTERACTION) {
+                    return deny(DenyReason::CapabilityRevoked);
+                }
+                // This event doesn't change state, it's a notification that
+                // the agent recognizes it needs help. The state change happens
+                // when the human responds with HumanCorrection.
+                (Decision::Admit, *self)
+            }
+
+            Event::HumanCorrection { grant } => {
+                if self.phase != Phase::Active {
+                    return deny(DenyReason::WrongPhase);
+                }
+                if !self.granted.contains(Capabilities::HUMAN_INTERACTION) {
+                    return deny(DenyReason::CapabilityRevoked);
+                }
+                // A7, NON-SELF-AUTHORISATION. Verifying the grant requires only a
+                // hash; producing one requires a preimage of the current anchor,
+                // which the provisioner alone can supply. This is the check that
+                // makes A6 more than bookkeeping: without it the agent resolves
+                // its own doubt and the threshold never binds.
+                if !grant.authorises(&self.correction_anchor) {
+                    return deny(DenyReason::CorrectionUnauthorized);
+                }
+                let mut next = *self;
+                next.uncertainty_resolved =
+                    self.uncertainty_resolved.saturating_add(grant.amount);
+                // Advance the chain, so this grant cannot be replayed.
+                next.correction_anchor = grant.next_anchor;
+                next.corrections_consumed = self.corrections_consumed.saturating_add(1);
                 (Decision::Admit, next)
             }
 
@@ -477,13 +678,25 @@ pub struct LedgerRecord {
     pub op_budget_after: u64,
     /// Disclosure budget after arbitration.
     pub disclosure_after: u64,
+    /// Cumulative uncertainty incurred after arbitration.
+    pub uncertainty_incurred_after: u64,
+    /// Cumulative uncertainty resolved after arbitration.
+    pub uncertainty_resolved_after: u64,
+    /// Correction grants consumed after arbitration (A7).
+    ///
+    /// The anchor itself is deliberately not recorded: it is a hash chain the
+    /// operator holds, and publishing successive links would let an observer
+    /// predict nothing but would still leak the chain's shape. The count is what an
+    /// auditor needs, how many times the agent was released, versus how many
+    /// releases the operator authorised.
+    pub corrections_consumed_after: u64,
     /// [`Decision::code`].
     pub decision_code: u64,
 }
 
 impl LedgerRecord {
     /// Field count in [`Self::to_words`]. Fixed, so the circuit shape is fixed.
-    pub const WORDS: usize = 8;
+    pub const WORDS: usize = 11;
 
     /// Canonical word encoding, in declaration order.
     #[must_use]
@@ -496,6 +709,9 @@ impl LedgerRecord {
             self.granted_after,
             self.op_budget_after,
             self.disclosure_after,
+            self.uncertainty_incurred_after,
+            self.uncertainty_resolved_after,
+            self.corrections_consumed_after,
             self.decision_code,
         ]
     }
@@ -510,8 +726,13 @@ pub const fn event_code(event: &Event) -> u64 {
         Event::KeyReleased => 3,
         Event::IdentityAttest => 4,
         Event::ErasureAttest => 5,
-        Event::Erase => 6,
-        Event::WatchdogExpiry => 7,
+        Event::RequestHumanVeto { .. } => 6,
+        Event::HumanCorrection { .. } => 7,
+        // NOTE: codes 8 and 9 are Erase and WatchdogExpiry; new variants must
+        // append rather than insert, because these codes are folded into the
+        // ledger digest that published attestations commit to.
+        Event::Erase => 8,
+        Event::WatchdogExpiry => 9,
     }
 }
 
@@ -519,17 +740,18 @@ pub const fn event_code(event: &Event) -> u64 {
 ///
 /// # Two digests, two jobs
 ///
-/// The `chain_digest` here is SHA-256 and exists for cheap runtime tamper
-/// detection with no dependency on the SNARK stack. The commitment bound into the
-/// erasure proof is a *separate* Poseidon fold computed by
-/// `chronos_snark::containment_commitment`, because a SHA-256 chain would cost
-/// tens of thousands of constraints to re-derive in-circuit.
+/// The `chain_digest` here is SHA-256 and covers every record, but it is never
+/// re-derived in-circuit, a SHA-256 chain would cost tens of thousands of
+/// constraints. The commitment bound into the erasure proof is a *separate*
+/// Poseidon hash of the fixed-size `chronos_snark::ContainmentSummary`, which
+/// carries this digest as two field limbs. The full history is therefore bound
+/// transitively, while the summary's terminal predicates are checked directly.
 ///
 /// # Bounded memory
 ///
 /// A long mission can arbitrate an unbounded number of events, so only a bounded
 /// tail is retained for introspection. The chain digest still covers *every*
-/// record, so truncating the tail does not weaken the commitment — it only limits
+/// record, so truncating the tail does not weaken the commitment, it only limits
 /// what can be inspected locally.
 pub struct ContainmentLedger {
     state: ContainmentState,
@@ -555,6 +777,14 @@ impl ContainmentLedger {
         h.update(initial.deadline_secs.to_be_bytes());
         h.update(initial.op_budget.to_be_bytes());
         h.update(initial.disclosure_budget_bits.to_be_bytes());
+        // A6: the autonomy threshold is a provisioned parameter, so binding it
+        // here makes it tamper-evident. Without this a mission could be replayed
+        // under a threshold the provisioner never authorised.
+        h.update(initial.autonomy_threshold.to_be_bytes());
+        // A7: likewise the correction anchor. Binding the *initial* anchor pins
+        // which chain of authorisations this mission was provisioned against, so an
+        // agent cannot substitute a chain whose seed it holds.
+        h.update(initial.correction_anchor);
         let mut chain_digest = [0u8; 32];
         chain_digest.copy_from_slice(&h.finalize());
 
@@ -637,6 +867,9 @@ impl ContainmentLedger {
             granted_after: u64::from(committed.granted.bits()),
             op_budget_after: committed.op_budget,
             disclosure_after: committed.disclosure_budget_bits,
+            uncertainty_incurred_after: committed.uncertainty_incurred,
+            uncertainty_resolved_after: committed.uncertainty_resolved,
+            corrections_consumed_after: committed.corrections_consumed,
             decision_code: decision.code(),
         };
 
@@ -711,23 +944,32 @@ impl AxiomReport {
     }
 }
 
-/// Exhaustively verify A1–A5 over the reachable abstract state space.
+/// Exhaustively verify A1–A6 over the reachable abstract state space.
 ///
-/// The abstraction fixes `deadline_secs = 2` and draws each numeric quantity from
-/// `{0, 1, 2}`, standing for exhausted, exactly-one-unit-left, and plentiful. For
-/// order properties that is sound: A1–A3 and A5 depend only on the direction of
-/// change, and both boundaries are represented. For A4 the three `elapsed` values
-/// combined with the `declared_secs` values in [`Event::representatives`] place
+/// The abstraction fixes `deadline_secs = 2`, `autonomy_threshold = 2` and draws
+/// each numeric quantity from `{0, 1, 2}`, standing for exhausted, exactly-one-unit-left,
+/// and plentiful. For order properties that is sound: A1–A3 and A5 depend only on the
+/// direction of change, and both boundaries are represented. For A4 the three `elapsed`
+/// values combined with the `declared_secs` values in [`Event::representatives`] place
 /// `elapsed + declared` below, exactly at, and above the deadline, including the
-/// `u64::MAX` case that exercises the saturating add.
+/// `u64::MAX` case that exercises the saturating add. For A6 (epistemic humility), the
+/// abstraction exercises uncertainty scores at, below, and above the autonomy threshold.
 ///
-/// Cost is `4 phases × 2^4 capability sets × 3^3 numeric combinations × 11 events`,
-/// a few thousand transitions — microseconds, so it runs unconditionally at
+/// Cost is `4 phases × 2^5 capability sets × 3^5 numeric combinations × 14 events`,
+/// several thousand transitions, microseconds, so it runs unconditionally at
 /// startup rather than behind a feature flag.
 #[must_use]
 pub fn verify_axioms() -> AxiomReport {
     const DEADLINE: u64 = 2;
+    const AUTONOMY_THRESHOLD: u64 = 2;
     const VALUES: [u64; 3] = [0, 1, 2];
+
+    // A7's authorisation check is a hash comparison, which no interval abstraction
+    // can approximate. The two anchors below are the two cases that matter: a live
+    // chain whose next grant is known, and an exhausted chain. Together with the
+    // valid and forged grants in `Event::representatives` they cover both branches.
+    let (live_anchor, _, _) = crate::correction::model_check_chain();
+    let anchors = [live_anchor, CHAIN_END];
 
     let mut violations = Vec::new();
     let mut states = Vec::new();
@@ -737,14 +979,25 @@ pub fn verify_axioms() -> AxiomReport {
             for op_budget in VALUES {
                 for disclosure in VALUES {
                     for elapsed in VALUES {
-                        states.push(ContainmentState {
-                            phase,
-                            granted: Capabilities::from_bits_truncate(cap_bits),
-                            op_budget,
-                            disclosure_budget_bits: disclosure,
-                            elapsed_secs: elapsed,
-                            deadline_secs: DEADLINE,
-                        });
+                        for uncertainty_incurred in VALUES {
+                            for uncertainty_resolved in VALUES {
+                                for anchor in anchors {
+                                    states.push(ContainmentState {
+                                        phase,
+                                        granted: Capabilities::from_bits_truncate(cap_bits),
+                                        op_budget,
+                                        disclosure_budget_bits: disclosure,
+                                        elapsed_secs: elapsed,
+                                        deadline_secs: DEADLINE,
+                                        uncertainty_incurred,
+                                        uncertainty_resolved,
+                                        autonomy_threshold: AUTONOMY_THRESHOLD,
+                                        correction_anchor: anchor,
+                                        corrections_consumed: 0,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -769,24 +1022,26 @@ pub fn verify_axioms() -> AxiomReport {
                 });
             };
 
-            // A1 — capability decay.
+            // A1, capability decay.
             if !to.granted.is_subset_of(from.granted) {
                 record("A1", "granted(s') must be a subset of granted(s)");
             }
 
-            // A2 — budget decay.
+            // A2, budget decay (and monotone ascent for uncertainty accumulators).
             if to.op_budget > from.op_budget
                 || to.disclosure_budget_bits > from.disclosure_budget_bits
+                || to.uncertainty_incurred < from.uncertainty_incurred
+                || to.uncertainty_resolved < from.uncertainty_resolved
             {
-                record("A2", "every budget must be non-increasing");
+                record("A2", "every budget must be monotone in its direction");
             }
 
-            // A3 — phase irreversibility.
+            // A3, phase irreversibility.
             if to.phase < from.phase {
                 record("A3", "phase must never descend");
             }
 
-            // A4 — deadline dominance. Only constrains admitted work-performing
+            // A4, deadline dominance. Only constrains admitted work-performing
             // events; an admitted Infer must be able to finish before the
             // deadline.
             if decision.is_admitted() {
@@ -800,10 +1055,53 @@ pub fn verify_axioms() -> AxiomReport {
                 }
             }
 
-            // A5 — erasure liveness from the successor state.
+            // A5, erasure liveness from the successor state.
             let (erase_decision, erased) = to.step(Event::Erase);
             if !erase_decision.is_admitted() || erased.phase != Phase::Erased {
                 record("A5", "Erased must be reachable in one step from every state");
+            }
+
+            // A6, EPISTEMIC HUMILITY (the interruptibility primitive).
+            // If an Infer event is admitted, verify that the resulting self-reported
+            // uncertainty does not exceed the autonomy threshold. This enforces
+            // interruptibility conditional on honest self-report.
+            if decision.is_admitted() {
+                if let Event::Infer { uncertainty_score: _, .. } = event {
+                    let net_uncertainty = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
+                    if net_uncertainty > to.autonomy_threshold {
+                        record(
+                            "A6",
+                            "an admitted inference must not cause self-reported uncertainty to exceed autonomy threshold",
+                        );
+                    }
+                }
+            }
+
+            // A7, NON-SELF-AUTHORISATION. Uncertainty may only be resolved by a
+            // grant that authorises against the anchor held *before* the
+            // transition, and every such grant must advance the chain. Without
+            // this, A6 is bookkeeping the agent can rewrite at will.
+            if to.uncertainty_resolved > from.uncertainty_resolved {
+                match event {
+                    Event::HumanCorrection { grant }
+                        if grant.authorises(&from.correction_anchor)
+                            && to.correction_anchor == grant.next_anchor
+                            && to.corrections_consumed > from.corrections_consumed => {}
+                    _ => record(
+                        "A7",
+                        "uncertainty may only be resolved by an authorised correction grant that advances the chain",
+                    ),
+                }
+            }
+            if decision.is_admitted() {
+                if let Event::HumanCorrection { grant } = event {
+                    if !grant.authorises(&from.correction_anchor) {
+                        record(
+                            "A7",
+                            "an unauthorised correction grant must never be admitted",
+                        );
+                    }
+                }
             }
         }
     }
@@ -815,12 +1113,20 @@ pub fn verify_axioms() -> AxiomReport {
     }
 }
 
+/// A6-specific tests, kept in their own file because the epistemic-humility
+/// surface is large enough that interleaving it with the A1–A5 suite makes both
+/// harder to read. Declared with `#[path]` so `use super::*` resolves to this
+/// module rather than the crate root.
+#[cfg(test)]
+#[path = "containment_a6_tests.rs"]
+mod a6_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn fresh() -> ContainmentState {
-        ContainmentState::new(10, 1024, 3600)
+        ContainmentState::without_corrections(10, 1024, 3600, 100)
     }
 
     // ── The headline property ────────────────────────────────────────────────
@@ -841,10 +1147,12 @@ mod tests {
                 .join("; ")
         );
         // Guard against the check silently degenerating to zero work.
+        // 4 phases × 2^5 capability sets × 3^5 numeric values (op, disclosure, elapsed, uncertainty_incurred, uncertainty_resolved)
+        // 4 phases x 2^5 capability sets x 3^5 numeric values x 2 anchors.
         assert_eq!(
             report.states_explored,
-            4 * 16 * 27,
-            "state space size changed — the abstraction was altered"
+            4 * 32 * 243 * 2,
+            "state space size changed, the abstraction was altered"
         );
         assert!(
             report.transitions_checked >= report.states_explored,
@@ -859,7 +1167,7 @@ mod tests {
     fn test_violation_detector_is_not_vacuous() {
         let s = fresh();
         let mut bad = s;
-        // Grant a capability that was not held — an A1 violation by construction.
+        // Grant a capability that was not held, an A1 violation by construction.
         bad.granted = Capabilities::none();
         let restored = ContainmentState {
             granted: Capabilities::all(),
@@ -936,10 +1244,18 @@ mod tests {
         s.elapsed_secs = 90;
         let (_, s) = s.step(Event::MissionInit);
 
-        let (ok, _) = s.step(Event::Infer { declared_secs: 10, disclosure_bits: 1 });
+        let (ok, _) = s.step(Event::Infer { 
+            declared_secs: 10, 
+            disclosure_bits: 1,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert!(ok.is_admitted(), "completion exactly at the deadline is admissible");
 
-        let (bad, unchanged) = s.step(Event::Infer { declared_secs: 11, disclosure_bits: 1 });
+        let (bad, unchanged) = s.step(Event::Infer { 
+            declared_secs: 11, 
+            disclosure_bits: 1,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert_eq!(bad, Decision::Deny(DenyReason::DeadlineExceeded));
         assert_eq!(unchanged, s, "a denied request must not consume budget");
     }
@@ -954,7 +1270,11 @@ mod tests {
         let (_, s) = s.step(Event::MissionInit);
 
         for declared in [u64::MAX, u64::MAX - 1, u64::MAX - 10] {
-            let (d, _) = s.step(Event::Infer { declared_secs: declared, disclosure_bits: 0 });
+            let (d, _) = s.step(Event::Infer { 
+                declared_secs: declared, 
+                disclosure_bits: 0,
+                uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+            });
             assert_eq!(
                 d,
                 Decision::Deny(DenyReason::DeadlineExceeded),
@@ -965,32 +1285,48 @@ mod tests {
 
     #[test]
     fn test_disclosure_budget_is_enforced_and_decremented() {
-        let mut s = ContainmentState::new(10, 8, 3600);
+        let mut s = ContainmentState::without_corrections(10, 8, 3600, 100);
         let (_, active) = s.step(Event::MissionInit);
         s = active;
 
-        let (d, next) = s.step(Event::Infer { declared_secs: 0, disclosure_bits: 5 });
+        let (d, next) = s.step(Event::Infer { 
+            declared_secs: 0, 
+            disclosure_bits: 5,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert!(d.is_admitted());
         assert_eq!(next.disclosure_budget_bits, 3);
 
-        let (d2, unchanged) = next.step(Event::Infer { declared_secs: 0, disclosure_bits: 4 });
+        let (d2, unchanged) = next.step(Event::Infer { 
+            declared_secs: 0, 
+            disclosure_bits: 4,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert_eq!(d2, Decision::Deny(DenyReason::DisclosureBudgetExceeded));
         assert_eq!(unchanged, next, "denial must not consume the remaining budget");
     }
 
     #[test]
     fn test_op_budget_exhaustion() {
-        let mut s = ContainmentState::new(2, 1024, 3600);
+        let mut s = ContainmentState::without_corrections(2, 1024, 3600, 100);
         let (_, active) = s.step(Event::MissionInit);
         s = active;
 
         for _ in 0..2 {
-            let (d, next) = s.step(Event::Infer { declared_secs: 0, disclosure_bits: 0 });
+            let (d, next) = s.step(Event::Infer { 
+                declared_secs: 0, 
+                disclosure_bits: 0,
+                uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+            });
             assert!(d.is_admitted());
             s = next;
         }
         assert_eq!(s.op_budget, 0);
-        let (d, _) = s.step(Event::Infer { declared_secs: 0, disclosure_bits: 0 });
+        let (d, _) = s.step(Event::Infer { 
+            declared_secs: 0, 
+            disclosure_bits: 0,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert_eq!(d, Decision::Deny(DenyReason::BudgetExhausted));
     }
 
@@ -1008,8 +1344,8 @@ mod tests {
         assert_eq!(s2, s1);
     }
 
-    /// Erasure attestation must survive erasure — it is served after the wipe by
-    /// design — while identity attestation must not.
+    /// Erasure attestation must survive erasure, it is served after the wipe by
+    /// design, while identity attestation must not.
     #[test]
     fn test_attestation_capabilities_after_erasure() {
         let (_, active) = fresh().step(Event::MissionInit);
@@ -1030,14 +1366,22 @@ mod tests {
     fn test_inference_denied_outside_active() {
         let s = fresh(); // Armed
         assert_eq!(
-            s.step(Event::Infer { declared_secs: 0, disclosure_bits: 0 }).0,
+            s.step(Event::Infer { 
+                declared_secs: 0, 
+                disclosure_bits: 0,
+                uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+            }).0,
             Decision::Deny(DenyReason::WrongPhase)
         );
 
         let (_, active) = s.step(Event::MissionInit);
         let (_, locked) = active.step(Event::KeyReleased);
         assert_eq!(
-            locked.step(Event::Infer { declared_secs: 0, disclosure_bits: 0 }).0,
+            locked.step(Event::Infer { 
+                declared_secs: 0, 
+                disclosure_bits: 0,
+                uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+            }).0,
             Decision::Deny(DenyReason::WrongPhase),
             "inference must stop once the key is released and wind-down begins"
         );
@@ -1064,7 +1408,11 @@ mod tests {
         assert_ne!(d0, d1, "appending a record must advance the chain digest");
         assert_eq!(ledger.len(), 1);
 
-        assert!(ledger.admit(Event::Infer { declared_secs: 1, disclosure_bits: 4 }).is_admitted());
+        assert!(ledger.admit(Event::Infer { 
+            declared_secs: 1, 
+            disclosure_bits: 4,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        }).is_admitted());
         assert_ne!(d1, ledger.chain_digest());
         assert_eq!(ledger.len(), 2);
         assert_eq!(ledger.counters(), (2, 0));
@@ -1075,7 +1423,11 @@ mod tests {
     #[test]
     fn test_ledger_records_denials() {
         let mut ledger = ContainmentLedger::new(fresh(), 8);
-        let d = ledger.admit(Event::Infer { declared_secs: 0, disclosure_bits: 0 });
+        let d = ledger.admit(Event::Infer { 
+            declared_secs: 0, 
+            disclosure_bits: 0,
+            uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+        });
         assert!(!d.is_admitted());
         assert_eq!(ledger.len(), 1);
         assert_eq!(ledger.counters(), (0, 1));
@@ -1110,7 +1462,11 @@ mod tests {
         let mut ledger = ContainmentLedger::new(fresh(), 4);
         ledger.admit(Event::MissionInit);
         for _ in 0..20 {
-            ledger.admit(Event::Infer { declared_secs: 0, disclosure_bits: 1 });
+            ledger.admit(Event::Infer { 
+                declared_secs: 0, 
+                disclosure_bits: 1,
+                uncertainty_score: 0,  // TODO(A6): wire real uncertainty signal
+            });
         }
         assert_eq!(ledger.tail().len(), 4, "tail must stay bounded");
         assert_eq!(ledger.len(), 21, "the chain must cover every record");
@@ -1137,11 +1493,30 @@ mod tests {
     /// commitment cannot be replayed across missions provisioned differently.
     #[test]
     fn test_ledger_genesis_binds_initial_parameters() {
-        let a = ContainmentLedger::new(ContainmentState::new(10, 1024, 3600), 4);
-        let b = ContainmentLedger::new(ContainmentState::new(11, 1024, 3600), 4);
-        let c = ContainmentLedger::new(ContainmentState::new(10, 1024, 7200), 4);
+        let a = ContainmentLedger::new(ContainmentState::without_corrections(10, 1024, 3600, 100), 4);
+        let b = ContainmentLedger::new(ContainmentState::without_corrections(11, 1024, 3600, 100), 4);
+        let c = ContainmentLedger::new(ContainmentState::without_corrections(10, 1024, 7200, 100), 4);
+        // A6: the autonomy threshold is provisioned, so it must be bound too, 
+        // otherwise a mission could be replayed under a threshold nobody granted.
+        let d = ContainmentLedger::new(ContainmentState::without_corrections(10, 1024, 3600, 101), 4);
+        // A7: the correction anchor pins which chain of authorisations the mission
+        // was provisioned against.
+        let e = ContainmentLedger::new(
+            ContainmentState::new(10, 1024, 3600, 100, [0x5Au8; 32]),
+            4,
+        );
         assert_ne!(a.chain_digest(), b.chain_digest());
         assert_ne!(a.chain_digest(), c.chain_digest());
+        assert_ne!(
+            a.chain_digest(),
+            e.chain_digest(),
+            "the correction anchor must be bound into the genesis digest"
+        );
+        assert_ne!(
+            a.chain_digest(),
+            d.chain_digest(),
+            "autonomy_threshold must be bound into the genesis digest"
+        );
     }
 
     #[test]
@@ -1150,8 +1525,10 @@ mod tests {
         let mut unique: Vec<u64> = codes.clone();
         unique.sort_unstable();
         unique.dedup();
-        // Five Infer representatives collapse to one code, which is intended.
-        assert_eq!(unique.len(), 7, "each event variant needs a distinct code");
+        // Six Infer representatives collapse to one code, which is intended.
+        // Total unique codes: MissionInit, Infer, KeyReleased, IdentityAttest, 
+        // ErasureAttest, RequestHumanVeto, HumanCorrection, Erase, WatchdogExpiry = 9
+        assert_eq!(unique.len(), 9, "each event variant needs a distinct code");
     }
 
     #[test]
@@ -1164,9 +1541,12 @@ mod tests {
             granted_after: 5,
             op_budget_after: 6,
             disclosure_after: 7,
+            uncertainty_incurred_after: 0,
+            uncertainty_resolved_after: 0,
+            corrections_consumed_after: 0,
             decision_code: 8,
         };
-        assert_eq!(r.to_words(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(r.to_words(), [1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 8]);
         assert_eq!(r.to_words().len(), LedgerRecord::WORDS);
     }
 }

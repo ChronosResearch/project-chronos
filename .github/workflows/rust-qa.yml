@@ -19,7 +19,7 @@ env:
 jobs:
 
   # ════════════════════════════════════════════════════════════════════════════
-  # TIER 1 — HARD GATES  (failures block the PR merge)
+  # TIER 1, HARD GATES  (failures block the PR merge)
   # ════════════════════════════════════════════════════════════════════════════
 
   repo-hygiene:
@@ -31,7 +31,7 @@ jobs:
 
       # Guards against unanchored .gitignore patterns silently excluding standard
       # Cargo layouts. `tests/` without a leading slash matches crates/*/tests/ at
-      # any depth, so an added integration test would never be committed — and CI
+      # any depth, so an added integration test would never be committed, and CI
       # would pass, because the file does not exist in the repository.
       - name: Standard Cargo paths must be committable
         run: ./scripts/check_gitignore.sh
@@ -72,7 +72,7 @@ jobs:
     # Cargo.toml) chronos-core completes in ~200s on a 12-thread machine, of which
     # the four TFHE key-generating tests are ~190s. GitHub runners have 2-4 cores,
     # so budget 3-4x, and the full workspace adds the Groth16 suites on top. 45
-    # minutes therefore means "something is wrong", not "this is slow" — but it is
+    # minutes therefore means "something is wrong", not "this is slow", but it is
     # deliberately not tighter, because a false timeout on a legitimately slow FHE
     # test is indistinguishable from a real failure in the gate.
     timeout-minutes: 45
@@ -105,7 +105,7 @@ jobs:
   # timeout on every run, was `continue-on-error` and therefore never gated
   # anything, and the resulting percentage was not used to make any decision.
   #
-  # A coverage number is worth having when it changes behaviour — a threshold that
+  # A coverage number is worth having when it changes behaviour, a threshold that
   # blocks a merge, or a report someone reads. Neither applied here, so it was
   # pure runner cost. Reinstate it scoped to `chronos-core` and `chronos-snark`
   # with the FHE tests excluded if it becomes useful.
@@ -143,7 +143,7 @@ jobs:
 
       # Only the musl build needs anything from apt. `gcc`, `g++` and `cmake`
       # already ship with the ubuntu-latest image, and `libgmp-dev` was never
-      # needed at all — `gmp-mpfr-sys` is commented out in Cargo.toml and
+      # needed at all, `gmp-mpfr-sys` is commented out in Cargo.toml and
       # chronos-vdf uses the pure-Rust num-bigint backend.
       - name: Install musl toolchain
         run: |
@@ -169,7 +169,7 @@ jobs:
           echo "✅ Binary size OK: ${SIZE} MB"
 
   # ════════════════════════════════════════════════════════════════════════════
-  # TIER 2 — SOFT GATES  (failures annotate the PR but do NOT block merge)
+  # TIER 2, SOFT GATES  (failures annotate the PR but do NOT block merge)
   # These run in parallel and use continue-on-error: true.
   # They produce annotations and are visible in the PR, but won't
   # prevent merging so a single upstream lint rule can't kill the pipeline.
@@ -241,7 +241,7 @@ jobs:
 
       # Miri sandboxes filesystem access by default, so `MpcCertificate::load`
       # aborts on `std::fs::read` with "unsupported operation: `open` not
-      # available when isolation is enabled" — not a memory-safety finding.
+      # available when isolation is enabled", not a memory-safety finding.
       # Disabling isolation lets Miri reach the code worth checking here: the
       # `unsafe` blocks in LockedBytes (mlock) and secure_wipe.
       - name: Run Miri on chronos-core
@@ -250,11 +250,11 @@ jobs:
         run: cargo +nightly miri test --package chronos-core
 
   # ════════════════════════════════════════════════════════════════════════════
-  # FINAL GATE — only depends on the HARD gates
+  # FINAL GATE, only depends on the HARD gates
   # ════════════════════════════════════════════════════════════════════════════
 
   # Three required checks: the tree is committable, it compiles, and the tests
-  # pass. `release-build` is deliberately absent — it is skipped on pull requests,
+  # pass. `release-build` is deliberately absent, it is skipped on pull requests,
   # and a skipped job reports neither success nor failure, so requiring it here
   # would fail every PR.
   ci-gate:

@@ -546,6 +546,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "rand 0.8.7",
+ "serde_json",
  "sha2",
 ]
 

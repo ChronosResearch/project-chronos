@@ -1,4 +1,4 @@
-//! The mission provisioning artifact — the public commitments a verifier holds.
+//! The mission provisioning artifact, the public commitments a verifier holds.
 //!
 //! # Why this file is the load-bearing piece
 //!
@@ -8,7 +8,7 @@
 //! choosing, commit to both, and produce a perfectly valid proof about material
 //! that was never time-locked. That is precisely the hole that made earlier
 //! revisions of the circuit vacuous, and no amount of constraint-writing closes
-//! it — it is closed by *who generates the commitments*.
+//! it, it is closed by *who generates the commitments*.
 //!
 //! So CHRONOS has three roles, and they must be distinct:
 //!
@@ -33,7 +33,7 @@
 //!
 //! Field elements are 32-byte big-endian hex. JSON rather than a binary format
 //! because this file is meant to be read by humans, pasted into grant appendices,
-//! and diffed — it is a publication, not a wire format.
+//! and diffed, it is a publication, not a wire format.
 
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -109,10 +109,49 @@ pub struct MissionPublic {
     pub op_budget: u64,
     /// Disclosure budget in bits the containment monitor starts with.
     pub disclosure_budget_bits: u64,
+    /// A6 autonomy threshold: the maximum net self-reported uncertainty
+    /// (`incurred - resolved`) under which the monitor will admit an inference.
+    ///
+    /// This belongs to the *provisioner*, not the agent, for the same reason
+    /// `sk_commit` does: a bound the agent could choose for itself is not a bound.
+    /// It is bound into the erasure proof through the containment summary, so a
+    /// verifier checks the trajectory against the threshold published here rather
+    /// than one the agent asserts after the fact.
+    ///
+    /// Defaulted rather than required so artifacts written before A6 still load.
+    /// The commitment definitions are unchanged by this field, so
+    /// [`MISSION_ARTIFACT_VERSION`] does not move.
+    #[serde(default = "default_autonomy_threshold")]
+    pub autonomy_threshold: u64,
+    /// A7 correction-chain anchor, hex-encoded, 32 bytes.
+    ///
+    /// Head of the hash chain of operator correction grants. The agent can verify a
+    /// grant against this but cannot produce one, which is what prevents it
+    /// resolving its own uncertainty. Fixed by the provisioner alongside `sk_commit`
+    /// and for the same reason.
+    ///
+    /// Defaults to the all-zero sentinel, meaning *no correction is ever
+    /// authorised*. That fails closed: an agent running against a pre-A7 artifact
+    /// halts at the autonomy threshold instead of resolving its way past it.
+    #[serde(default = "default_correction_anchor")]
+    pub correction_anchor: String,
 }
 
 /// Current [`MissionPublic::version`].
 pub const MISSION_ARTIFACT_VERSION: u32 = 1;
+
+/// Default A6 autonomy threshold for artifacts provisioned before the field
+/// existed. Chosen to be permissive: a pre-A6 mission never reported uncertainty,
+/// so a restrictive default would refuse inferences the artifact was written to
+/// allow.
+const fn default_autonomy_threshold() -> u64 {
+    100
+}
+
+/// Default A7 anchor: the terminal sentinel, which authorises nothing.
+fn default_correction_anchor() -> String {
+    format!("0x{}", "0".repeat(64))
+}
 
 impl MissionPublic {
     /// Build from field elements.
@@ -128,6 +167,8 @@ impl MissionPublic {
         mission_commit: Fr,
         op_budget: u64,
         disclosure_budget_bits: u64,
+        autonomy_threshold: u64,
+        correction_anchor: [u8; 32],
     ) -> Self {
         Self {
             version: MISSION_ARTIFACT_VERSION,
@@ -140,7 +181,31 @@ impl MissionPublic {
             mission_commit: fr_to_hex(mission_commit),
             op_budget,
             disclosure_budget_bits,
+            autonomy_threshold,
+            correction_anchor: format!("0x{}", hex::encode(correction_anchor)),
         }
+    }
+
+    /// Decode the A7 correction anchor.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::Snark`] if the field is not 32 hex-encoded bytes. A
+    /// malformed anchor is refused rather than defaulted, because defaulting to the
+    /// sentinel would silently disable every correction the operator provisioned.
+    pub fn correction_anchor_bytes(&self) -> ChronosResult<[u8; 32]> {
+        let s = self.correction_anchor.strip_prefix("0x").unwrap_or(&self.correction_anchor);
+        let raw = hex::decode(s).map_err(|e| {
+            ChronosError::Snark(format!("correction_anchor is not valid hex: {e}"))
+        })?;
+        if raw.len() != 32 {
+            return Err(ChronosError::Snark(format!(
+                "correction_anchor must be 32 bytes, got {}",
+                raw.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&raw);
+        Ok(out)
     }
 
     /// Validate and decode into the four provisioner-fixed commitments.
@@ -151,7 +216,7 @@ impl MissionPublic {
     pub fn commitments(&self) -> ChronosResult<[Fr; 4]> {
         if self.version != MISSION_ARTIFACT_VERSION {
             return Err(ChronosError::Snark(format!(
-                "mission artifact version {} is not supported (expected {MISSION_ARTIFACT_VERSION}) — \
+                "mission artifact version {} is not supported (expected {MISSION_ARTIFACT_VERSION}), \
                  the commitment definitions changed; re-provision the mission",
                 self.version
             )));
@@ -227,7 +292,79 @@ mod tests {
             Fr::from(44u64),
             8,
             128,
+            100,
+            [0x33u8; 32],
         )
+    }
+
+    /// The A7 anchor must survive the artifact round trip, and a malformed one must
+    /// be refused rather than silently defaulted, defaulting would disable every
+    /// correction the operator provisioned.
+    #[test]
+    fn test_correction_anchor_round_trips_and_validates() {
+        let m = sample();
+        assert_eq!(m.correction_anchor_bytes().expect("valid"), [0x33u8; 32]);
+
+        let s = serde_json::to_string(&m).expect("serialise");
+        let back: MissionPublic = serde_json::from_str(&s).expect("deserialise");
+        assert_eq!(back.correction_anchor_bytes().expect("valid"), [0x33u8; 32]);
+
+        let mut short = m.clone();
+        short.correction_anchor = "0x00".into();
+        assert!(short.correction_anchor_bytes().is_err(), "wrong length must fail");
+
+        let mut bad = m;
+        bad.correction_anchor = "0xzz".into();
+        assert!(bad.correction_anchor_bytes().is_err(), "non-hex must fail");
+    }
+
+    /// A pre-A7 artifact has no anchor. It must load, and it must fail closed: the
+    /// sentinel authorises no correction at all.
+    #[test]
+    fn test_pre_a7_artifact_defaults_to_no_corrections() {
+        let mut json = serde_json::to_value(sample()).expect("serialise");
+        json.as_object_mut()
+            .expect("object")
+            .remove("correction_anchor")
+            .expect("field present before removal");
+
+        let parsed: MissionPublic = serde_json::from_value(json).expect("must load");
+        assert_eq!(
+            parsed.correction_anchor_bytes().expect("valid"),
+            chronos_core::correction::CHAIN_END,
+            "an absent anchor must mean no correction is authorised"
+        );
+    }
+
+    /// An artifact written before A6 existed has no `autonomy_threshold` key. It
+    /// must still load, otherwise adding the field would strand every mission
+    /// provisioned earlier.
+    #[test]
+    fn test_pre_a6_artifact_loads_with_default_threshold() {
+        let mut json = serde_json::to_value(sample()).expect("serialise");
+        json.as_object_mut()
+            .expect("object")
+            .remove("autonomy_threshold")
+            .expect("field must be present before removal");
+
+        let parsed: MissionPublic = serde_json::from_value(json).expect("must load without the field");
+        assert_eq!(
+            parsed.autonomy_threshold,
+            default_autonomy_threshold(),
+            "a missing threshold must fall back to the documented default"
+        );
+    }
+
+    /// The threshold is part of the artifact the agent consumes, so it must
+    /// survive a JSON round trip rather than being silently defaulted away.
+    #[test]
+    fn test_autonomy_threshold_round_trips() {
+        let mut m = sample();
+        m.autonomy_threshold = 37;
+        let s = serde_json::to_string(&m).expect("serialise");
+        let back: MissionPublic = serde_json::from_str(&s).expect("deserialise");
+        assert_eq!(back.autonomy_threshold, 37);
+        assert_eq!(back, m);
     }
 
     #[test]

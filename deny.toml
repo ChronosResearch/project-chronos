@@ -26,7 +26,7 @@ ignore = [
 allow-osi-fsf-free = "either"
 # Still block completely unknown/proprietary licenses.
 unlicensed = "deny"
-# Copyleft (GPL) is a warning only — most transitive deps are LGPL at worst.
+# Copyleft (GPL) is a warning only, most transitive deps are LGPL at worst.
 copyleft = "allow"
 
 [bans]
