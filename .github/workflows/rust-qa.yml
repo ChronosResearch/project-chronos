@@ -192,9 +192,22 @@ jobs:
       # already ship with the ubuntu-latest image, and `libgmp-dev` was never
       # needed at all, `gmp-mpfr-sys` is commented out in Cargo.toml and
       # chronos-vdf uses the pure-Rust num-bigint backend.
+      #
+      # Run #265 (9 Sept) failed here on "Hash Sum mismatch" for
+      # dl.google.com/linux/chrome/deb. That source ships preinstalled on the
+      # ubuntu-latest image, we never use it, and Google's mirror served a
+      # stale index for a few minutes, a known transient flake on GitHub
+      # runners. Dropping the source we don't need and retrying `apt-get
+      # update` a few times is the standard fix for this class of failure and
+      # costs nothing when apt is healthy.
       - name: Install musl toolchain
         run: |
-          sudo apt-get update -qq
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          for i in 1 2 3; do
+            sudo apt-get update -qq && break
+            echo "apt-get update failed (attempt ${i}/3), retrying in 5s..."
+            sleep 5
+          done
           sudo apt-get install -y --no-install-recommends musl-tools
 
       - name: Add musl target
