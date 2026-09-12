@@ -242,8 +242,8 @@ contracts/           Groth16 verifier and attestation registry (Solidity, uncomp
 | Component | Choice | Why |
 |---|---|---|
 | Proof system | Groth16 over BN254 | 128-byte constant-size proofs, matching EVM `alt_bn128` precompiles |
-| Hash and commitments | Poseidon-128, `t=3`, `alpha=5`, 8+57 rounds (arkworks reference impl) | about 300 constraints per permutation against about 25,000 for SHA-256 |
-| Key sealing | **Chronos-AEAD**, a custom encrypt-then-MAC over standard Poseidon, **not externally audited** | in-circuit authenticated decryption at about 2k constraints instead of about 60k for AES-GCM |
+| Hash and commitments | Poseidon-128, `t=3`, `alpha=5`, 8+57 rounds (arkworks reference impl) | 480 constraints for a 2-input digest, measured, against about 25,000 for SHA-256 |
+| Key sealing | **Chronos-AEAD**, a custom encrypt-then-MAC over standard Poseidon, **not externally audited** | in-circuit authenticated decryption at 1,204 constraints, measured, instead of tens of thousands for AES-GCM |
 | VDF | Wesolowski over RSA-2048 | single-element proof, `O(log T)` verification |
 | Correction grants | SHA-256 reverse hash chain | verify with a hash, forge only with a preimage, and no new dependency |
 | Beacon | drand `quicknet` (BLS12-381) | public unpredictable salt, verified offline against mainnet round 123 |
@@ -276,27 +276,33 @@ Note the asymmetry on the A6 and A7 pair. `/request-veto` takes no body and read
 
 Every figure below comes from a test in this repository, on a recorded machine. Earlier revisions of this work asserted numbers that did not hold, and those corrections are catalogued in [`AUDIT.md`](AUDIT.md).
 
-Development machine: Windows x86-64, release build, pure-Rust `num-bigint` with no GMP. Re-measure on your target, because [`T` calibration](#calibrating-t) depends on throughput.
+Development machine: Intel Core 5 210H, 8 physical cores, 16 GB, Windows x86-64, **mains power**, release build, `rustc` 1.97.1, pure-Rust `num-bigint` with no GMP. Timing rows report the range across four consecutive runs after an idle period, not a single sample. Re-measure on your target, because [`T` calibration](#calibrating-t) depends on throughput.
 
 ### VDF, Wesolowski over RSA-2048
 
 | `T` (steps) | Wall (ms) | Squarings/sec |
 |---:|---:|---:|
-| 1,000 | 4 | 497,661 |
-| 10,000 | 39 | 505,156 |
-| 100,000 | 395 | 505,564 |
+| 1,000 | 3 to 4 | 442,008 to 507,627 |
+| 10,000 | 39 to 42 | 472,831 to 505,615 |
+| 100,000 | 409 to 419 | 477,172 to 488,296 |
 
-The third column is the one that matters. Wall time grows linearly in `T` while throughput stays flat, which is what sequential work looks like. Throughput counts `2T` operations per evaluation, `T` for the output and `T` for the proof.
+The third column is the one that matters. Wall time grows linearly in `T` while throughput stays flat across two orders of magnitude, which is what sequential work looks like. Throughput counts `2T` operations per evaluation, `T` for the output and `T` for the proof.
+
+> **Power state changes this by a factor of two to six.** On the same machine and the same binary, on battery at 22 percent charge, throughput fell as low as 71,000 and never exceeded 242,000 squarings per second. Measure with the charger attached, or your `T` calibration is wrong in the direction that shortens the lock.
 
 ### Groth16 over BN254
 
 | Metric | Erasure | Identity |
 |---|---:|---:|
-| R1CS constraints | **12,966** | about 1,500 |
+| R1CS constraints | **12,966** | **2,185** |
+| Witness variables | 12,062 | not reported |
 | Public inputs | 5 | 1 |
-| Prove | about 160 ms | about 56 ms |
-| Verify | 1 ms | 1 ms |
+| Setup | 217 to 222 ms | 52 to 59 ms |
+| Prove | 205 to 217 ms | 57 to 60 ms |
+| Verify | 1 to 2 ms | 1 ms |
 | Proof size | 128 B | 128 B |
+
+Constraint counts and proof sizes are machine-independent; the timing rows are not.
 
 Every constraint group is load-bearing: Poseidon commitments to `y`, the ciphertext and the key, the in-circuit KDF, authenticated decryption, and the containment terminal-state predicates including both A6 inequalities. Removing any group breaks a test. The count went 8,267 with A1 to A5, 10,738 when A6 and A7 arrived, and 12,966 once A6 was enforced per step rather than only at termination. The second range comparison is most of that last increase; range checks are not cheap in R1CS, which is the price of the stronger claim.
 
@@ -316,7 +322,19 @@ Triple-pass wipe plus `munlock` on 32 bytes is under 1 microsecond, and allocati
 
 ### Test suite
 
-`chronos-core` 98, `chronos-snark` 142, `chronos-agent` 58 plus 15 end-to-end, all passing. One FHE scaling test is marked `#[ignore]` because it takes minutes.
+**336 passing, 2 ignored**, measured across the workspace with `cargo test --workspace --all-targets`.
+
+| Target | Passing | Ignored |
+|---|---:|---:|
+| `chronos-core` (lib) | 97 | 1 |
+| `chronos-snark` (lib) | 144 | 0 |
+| `chronos-snark` (lifecycle) | 6 | 0 |
+| `chronos-agent` (lib) | 58 | 0 |
+| `chronos-agent` (end-to-end) | 15 | 0 |
+| `chronos-vdf` (lib) | 16 | 1 |
+| **Total** | **336** | **2** |
+
+The two ignored tests are the FHE scaling series and a timing-sensitive VDF assertion; both are run explicitly rather than skipped. `chronos-provision`, `chronos-bench` and `chronos-ffi` carry no tests of their own, and the provisioner's artifact format is tested in `chronos-snark`. Thirty-one of the `chronos-snark` tests cover the BGM17 ceremony, which is implemented and has never been run.
 
 The suite includes an end-to-end lifecycle test that crosses the provisioner and agent boundary with **real sequential squarings**, drives a full A6 and A7 cycle (an inference refused for excess uncertainty, a self-recorded pause, an operator grant spent, the request then admitted), and asserts the proof verifies against commitments the agent never chose. Negative cases assert that a fabricated key, an incomplete VDF, a mission that never erased, a run ending over the uncertainty threshold, and a forged or replayed correction grant are each unprovable.
 
@@ -324,16 +342,16 @@ The suite includes an end-to-end lifecycle test that crosses the provisioner and
 
 ## Calibrating `T`
 
-**Read this before deploying.** At about 505k squarings per second and `2T` squarings per evaluation, the delay is `2T / 505,564` seconds.
+**Read this before deploying.** At roughly 4.8 x 10^5 squarings per second and `2T` squarings per evaluation, the delay is `2T / (4.8 x 10^5)` seconds.
 
 | Target delay | Required `T` |
 |---|---:|
-| 1 second | about 2.5 x 10^5 |
-| 1 minute | about 1.5 x 10^7 |
-| 1 hour | about 9.1 x 10^8 |
-| 24 hours | about 2.2 x 10^10 |
+| 1 second | about 2.4 x 10^5 |
+| 1 minute | about 1.4 x 10^7 |
+| 1 hour | about 8.6 x 10^8 |
+| 24 hours | about 2.1 x 10^10 |
 
-Two consequences deserve emphasis. `T` must be calibrated against **measured throughput on the machine that will run the mission**, because `t_seconds` is only a watchdog and does not make the cryptography slower. And because a VDF bounds *sequential work* rather than wall time, `T` should be chosen against the **fastest plausible adversary**, not the deployment host: a GMP-backed or ASIC implementation finishes sooner.
+Three consequences deserve emphasis. `T` must be calibrated against **measured throughput on the machine that will run the mission**, because `t_seconds` is only a watchdog and does not make the cryptography slower. Because a VDF bounds *sequential work* rather than wall time, `T` should be chosen against the **fastest plausible adversary**, not the deployment host: a GMP-backed or ASIC implementation finishes sooner. And throughput on one machine is not one number: see the power-state warning above, which is a factor of two to six on this laptop alone.
 
 ## Known gaps
 

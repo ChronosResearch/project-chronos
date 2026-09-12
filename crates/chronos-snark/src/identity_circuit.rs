@@ -35,7 +35,8 @@
 //!
 //! with `y` a private witness and `root` a full-width public input. Proving this
 //! requires knowing `y`, which requires having completed the VDF. That is the
-//! entire EAIP claim, and it now costs roughly 1,500 real constraints.
+//! entire EAIP claim, and it costs 2,185 real constraints, measured by
+//! [`tests::test_constraint_count_is_real_but_modest`].
 //!
 //! # Why the root is Poseidon rather than SHA-256
 //!
@@ -521,7 +522,10 @@ mod tests {
     }
 
     /// Constraint budget. A real SHA-256 pre-image proof would be ~25,000
-    /// constraints; the Poseidon root brings the same statement under 2,000.
+    /// constraints; the Poseidon root brings the same statement to 2,185. The band
+    /// is wide because this is a regression guard, not a target: a jump into the
+    /// tens of thousands means a bit-oriented gadget crept in, and a collapse to
+    /// the low hundreds means constraints were removed.
     #[test]
     fn test_constraint_count_is_real_but_modest() {
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -533,7 +537,7 @@ mod tests {
         println!("IdentityCircuit constraints: {n}");
         assert!(
             (500..8_000).contains(&n),
-            "expected a real pre-image proof of roughly 1-2k constraints, got {n}"
+            "expected a real pre-image proof of a couple of thousand constraints, got {n}"
         );
     }
 

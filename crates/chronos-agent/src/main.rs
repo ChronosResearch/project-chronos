@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
         target: "chronos",
         states = report.states_explored,
         transitions = report.transitions_checked,
-        "containment axioms A1-A6 verified"
+        "containment axioms A1-A7 verified"
     );
 
     let cfg = ChronosConfig::load().context("configuration invalid")?;

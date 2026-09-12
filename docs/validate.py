@@ -28,10 +28,13 @@ BANNED = [
 # entries here most likely to go stale. `cargo test -p chronos-snark --lib
 # test_constraint_count_is_in_expected_band -- --nocapture` prints the first;
 # `verify_axioms().states_explored` is the second.
+# `Apache-2.0` replaced `AGPL-3.0` here when the project relicensed. The old entry
+# stayed behind and this validator had been failing on it ever since, which is the
+# failure mode the validator exists to catch, applied to the validator itself.
 REQUIRED = [
     "12,966", "128", "186,624", "1975 ms", "1846 ms", "2074 ms",
     "sequential squarings",
-    "single-party", "AGPL-3.0",
+    "single-party", "Apache-2.0",
 ]
 
 

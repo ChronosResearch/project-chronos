@@ -313,13 +313,15 @@ let decision = state.step(Event::Infer {
 });
 assert_eq!(decision, Decision::Deny(DenyReason::UncertaintyTooHigh));
 
-// Agent pauses itself
-state.step(Event::RequestHumanVeto { current_uncertainty: 145 });
+// Agent pauses itself. No payload: A8, the agent contributes one bit.
+state.step(Event::RequestHumanVeto);
 
-// Human provides guidance
-state.step(Event::HumanCorrection { uncertainty_resolved: 100 });
+// The operator spends the next grant from the provisioned chain. A7: the amount
+// is hashed into the link, so the agent can neither invent this nor inflate it.
+state.step(Event::HumanCorrection { grant: grants[0] });
 
-// Agent can now proceed (145 - 100 = 45, below threshold)
+// Agent can now proceed with the headroom the grant returned, but
+// `peak_uncertainty` still records how high the run went.
 ```
 
 ### Verification

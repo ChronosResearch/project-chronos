@@ -215,18 +215,41 @@ rather than that it computed the right thing.
 | 60 | The trusted setup ran inside `/mission/init`, so the verifying key changed every mission and no third party could ever check a proof. The agent was prover and sole verifier | **Critical** | `main.rs` | Proving key is a persisted artifact; `/attestation` publishes proof, public inputs and verifying key |
 | 61 | Public inputs were two `u8` values (`y[0]`, `wipe_pattern`), giving the on-chain verifier 8 bits of binding to the VDF, forgeable by brute force over 256 candidates | **Critical** | `circuit.rs`, `solidity.rs`, `*.sol` | Five full-width BN254 scalars; `test_public_input_count_tracks_the_circuit` pins the ABI against the Solidity constant |
 | 62 | The "Poseidon x^5 sponge" had no round constants, and its MDS mix summed three lanes into lane 0 while leaving lanes 1–2 untouched, a non-invertible, non-MDS linear layer, trivially open to invariant-subspace attack. Its derived `K_enc` was bound to `let _k_enc = ...` and discarded, so ~650 of ~700 constraints were decorative | **Critical** | `circuit.rs` → `poseidon.rs` | Replaced with `ark-crypto-primitives`' audited Poseidon, Grain-LFSR constants, Cauchy MDS. `test_native_and_gadget_agree` pins native/in-circuit equality; `test_mds_is_cauchy_wellformed` checks the preconditions that make the matrix provably MDS |
-| 63 | `IdentityCircuit` enforced one constraint, `mid_vars[0] == mid_pub`, comparing one byte of a *public* value with itself. `y_vars` was allocated then discarded via `let _ = (&y_vars, root_pub);`. Separately, `identity_proof_handler` passed the root `R` as the `y` argument, so even the intended relation was fed `(R, R)` | **Critical** | `identity_circuit.rs`, `main.rs` | Pre-image relation `Poseidon(y, mission) == R` genuinely encoded, ~1,500 constraints. Root changed from SHA-256 to Poseidon: a **protocol change**, documented, because a SHA-256 pre-image proof costs ~25,000 constraints and is why the previous revisions faked it |
+| 63 | `IdentityCircuit` enforced one constraint, `mid_vars[0] == mid_pub`, comparing one byte of a *public* value with itself. `y_vars` was allocated then discarded via `let _ = (&y_vars, root_pub);`. Separately, `identity_proof_handler` passed the root `R` as the `y` argument, so even the intended relation was fed `(R, R)` | **Critical** | `identity_circuit.rs`, `main.rs` | Pre-image relation `Poseidon(y, mission) == R` genuinely encoded, **2,185 constraints measured** (see the re-measurement note below the table). Root changed from SHA-256 to Poseidon: a **protocol change**, documented, because a SHA-256 pre-image proof costs ~25,000 constraints and is why the previous revisions faked it |
 | 64 | `test_ledger_history_is_bound` asserted a witness-only perturbation makes the circuit unsatisfiable. It cannot: `generate_constraints` derives the public inputs from the witness, so any witness change is self-consistent within one synthesis. The test was structurally incapable of detecting the bug it claimed to guard | Medium (test) | `circuit.rs`, `prover.rs` | Split into a commitment-injectivity test and a proof-level binding test where the verifier supplies inputs independently |
+
+### Re-measurement note (2026-08-18)
+
+Two constraint counts in this file and the README had been recorded from plausible
+estimates rather than from a run, and were cited afterwards as though they had been
+measured. That is the same failure mode as rows 36 and 39, arriving by a quieter
+route, so it belongs in this log rather than in a silent edit.
+
+| Figure | Was documented as | Measured |
+|---|---:|---:|
+| Identity circuit, total | ~1,500 | **2,185** |
+| Chronos-AEAD decrypt gadget | ~2,000 | **1,204** |
+
+The erasure circuit's 12,966 was measured when it was recorded and is unchanged. One
+Poseidon digest over two field inputs is 480 constraints, which was not previously
+recorded at all; the README's "about 300 per permutation" refers to a single
+permutation and a 2-input digest absorbs two of them, so the two figures agree.
+
+Every figure above is now printed by a test:
+`test_constraint_count_is_real_but_modest`,
+`test_gadget_decrypt_constraint_cost_is_modest`, and
+`test_single_hash_constraint_cost_is_bounded`. Run them with `--nocapture` rather
+than trusting this table.
 
 ### What was added
 
 | Component | Purpose |
 |---|---|
-| `poseidon.rs` | Poseidon-128 over BN254, native and R1CS, with a test asserting the two produce identical digests. Every commitment in the system is built from it |
-| `aead.rs` | **Chronos-AEAD**, Poseidon encrypt-then-MAC. Replaces AES-256-GCM *for the key-release step only*, so in-circuit decryption costs ~2,000 constraints instead of the tens of thousands an AES gadget needs. AES-GCM remains correct everywhere CHRONOS talks to something else; it was simply the wrong choice at a point where a proof must reason about the decryption |
+| `poseidon.rs` | Poseidon-128 over BN254, native and R1CS, with a test asserting the two produce identical digests. Every commitment in the system is built from it. One digest over two field inputs costs 480 constraints, measured |
+| `aead.rs` | **Chronos-AEAD**, Poseidon encrypt-then-MAC. Replaces AES-256-GCM *for the key-release step only*, so in-circuit decryption costs 1,204 constraints, measured, instead of the tens of thousands an AES gadget needs. AES-GCM remains correct everywhere CHRONOS talks to something else; it was simply the wrong choice at a point where a proof must reason about the decryption |
 | `containment.rs` | **Axiomatic Containment Monitor.** Containment as order-theoretic invariants over a lattice-valued state: capability decay (A1), budget decay (A2), phase irreversibility (A3), deadline dominance (A4), erasure liveness (A5), epistemic humility (A6), non-self-authorisation (A7). `verify_axioms` model-checks all seven exhaustively over 186,624 abstract states at startup; the agent refuses to boot on violation. A policy bug becomes a startup failure rather than a runtime incident. A candidate eighth, non-manipulation, is structural rather than checked, see `CORRIGIBILITY.md` |
 | `correction.rs` | The A7 grant chain. A SHA-256 reverse hash chain whose head the provisioner publishes and whose links the operator holds, so the agent can verify a correction but not mint one. Chosen over signatures to keep a signature dependency out of the containment core |
-| `mission.rs` | The published mission artifact. Carries the four provisioner-fixed commitments, which is what makes the erasure proof binding rather than self-asserted |
+| `mission.rs` | The published mission artifact. Carries the four provisioner-fixed commitments, which is what makes the erasure proof binding rather than self-asserted, plus the A6 autonomy threshold and the A7 chain anchor. Artifacts predating either field load with a fail-closed default: a threshold that admits everything and an exhausted chain that authorises nothing |
 | `chronos-provision` | The missing third role. Generates the modulus, seals the key, publishes commitments, then wipes `sk` and destroys `φ(N)` |
 | `tests/lifecycle.rs` | End-to-end test across the provisioner/agent boundary with real sequential squarings. Asserts the proof verifies against commitments the agent never chose, and that a fabricated key, an incomplete VDF, and an unerased mission are each unprovable |
 
@@ -235,9 +258,13 @@ rather than that it computed the right thing.
 The erasure proof now establishes that the prover simultaneously knew: the VDF
 output behind `y_commit`; `K_enc` derived from that exact output via the in-circuit
 KDF; the ciphertext behind `ct_commit`; that it authenticates and decrypts under
-`K_enc`; that the plaintext equals the key behind `sk_commit`; and that the
+`K_enc`; that the plaintext equals the key behind `sk_commit`; that the
 containment monitor terminated erased with all capabilities revoked and both
-budgets at zero.
+budgets at zero; and that the run satisfied both A6 inequalities,
+`incurred <= resolved + threshold` and `peak <= threshold`. The second of those is
+the per-step form: terminal totals cannot distinguish a run that crossed the
+threshold and was corrected back under from one that never crossed it, and the high
+water mark can.
 
 **Proof-carrying containment**, meaning that the containment summary is bound into
 the erasure attestation so one record covers both key destruction and capability
