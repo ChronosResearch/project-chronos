@@ -112,6 +112,9 @@ impl NonceCache {
     /// Returns `true` if the nonce is fresh (not a replay), `false` if it
     /// has been seen before.
     pub fn check_and_insert(&mut self, nonce: &[u8; 12]) -> bool {
+        if self.capacity == 0 {
+            return true;
+        }
         if self.seen.contains(nonce) {
             return false; // Replay detected.
         }
@@ -155,6 +158,17 @@ mod tests {
         cache.check_and_insert(&[4u8; 12]);
         // First nonce should now be accepted again (evicted from window).
         assert!(cache.check_and_insert(&[0u8; 12]), "Evicted nonce must be accepted again");
+    }
+
+    #[test]
+    fn test_nonce_cache_zero_capacity_disables_replay_tracking() {
+        let mut cache = NonceCache::new(0);
+        let nonce = [0x2Au8; 12];
+        assert!(cache.check_and_insert(&nonce), "first nonce should be accepted");
+        assert!(
+            cache.check_and_insert(&nonce),
+            "with a zero-sized window, no nonce should be retained as a replay"
+        );
     }
 
     #[test]
