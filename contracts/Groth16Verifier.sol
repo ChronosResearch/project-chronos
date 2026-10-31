@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: UNLICENSED
+// Copyright (c) 2026 Shashank Kumar (Chronos Research). All rights reserved.
 pragma solidity ^0.8.20;
 
 /// @title Groth16 verifier for the CHRONOS erasure circuit
