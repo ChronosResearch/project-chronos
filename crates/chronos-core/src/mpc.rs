@@ -116,7 +116,7 @@ impl MpcCertificate {
                     path_ref.display()
                 )));
             }
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::warn!(
                     target: "chronos",
                     path = %path_ref.display(),
@@ -127,6 +127,19 @@ impl MpcCertificate {
                 RSA_2048.parse::<BigUint>().map_err(|e| {
                     ChronosError::MpcCert(format!("built-in RSA-2048 constant failed to parse: {e}"))
                 })?
+            }
+            // Any other I/O error means the file is there but unreadable:
+            // permissions, a bad mount, a transient device error. Falling back
+            // then would silently downgrade a provisioned per-mission modulus to
+            // the group every deployment shares, which is the opposite of what
+            // the operator asked for and leaves only a warning behind.
+            Err(e) => {
+                return Err(ChronosError::MpcCert(format!(
+                    "modulus file '{}' exists but could not be read: {e}. Refusing to fall back \
+                     to the shared RSA-2048 modulus, because that would silently weaken a \
+                     mission provisioned with its own group.",
+                    path_ref.display()
+                )));
             }
         };
 

@@ -275,6 +275,13 @@ fn main() -> Result<()> {
         correction_anchor,
     );
 
+    // Refuse to write an artifact the agent would reject at load. Catching it
+    // here costs nothing; catching it at the agent means the sealing work above,
+    // including the VDF evaluation, has already been thrown away.
+    artifact
+        .validate()
+        .map_err(|e| anyhow::anyhow!("refusing to write an invalid mission artifact: {e}"))?;
+
     // ── 6. Write outputs ─────────────────────────────────────────────────────
     let mission_path = out.join("mission_public.json");
     let ct_path = out.join("ct_sk.bin");

@@ -64,17 +64,50 @@ struct CeremonyState {
     phase2_parameters: Option<Vec<u8>>,
     contributors_phase1: Vec<String>,
     contributors_phase2: Vec<String>,
+    /// Proof of knowledge for the most recent Phase 1 contribution.
+    ///
+    /// Without this, `verify` has nothing to check the contribution against: the
+    /// accumulator alone does not prove the contributor knew an exponent.
+    #[serde(default, with = "serde_bytes")]
+    phase1_proof: Option<Vec<u8>>,
+}
+
+fn encode_phase1_proof(
+    proof: &chronos_snark::ceremony::Phase1Proof,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut buf = Vec::new();
+    proof.commit_g1.serialize_compressed(&mut buf)?;
+    proof.response.serialize_compressed(&mut buf)?;
+    Ok(buf)
+}
+
+fn decode_phase1_proof(
+    bytes: &[u8],
+) -> Result<chronos_snark::ceremony::Phase1Proof, Box<dyn std::error::Error>> {
+    let mut cursor = bytes;
+    let commit_g1 = ark_bn254::G1Affine::deserialize_compressed(&mut cursor)?;
+    let response = ark_bn254::Fr::deserialize_compressed(&mut cursor)?;
+    Ok(chronos_snark::ceremony::Phase1Proof {
+        commit_g1,
+        response,
+    })
 }
 
 impl CeremonyState {
     fn from_coordinator_phase1(
         coord: &CeremonyCoordinator,
         params: &Phase1Parameters,
+        proof: Option<&chronos_snark::ceremony::Phase1Proof>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut buf = Vec::new();
         params.tau_powers_g1.serialize_compressed(&mut buf)?;
         params.tau_powers_g2.serialize_compressed(&mut buf)?;
         buf.extend_from_slice(&params.contribution_index.to_le_bytes());
+
+        let phase1_proof = match proof {
+            Some(p) => Some(encode_phase1_proof(p)?),
+            None => None,
+        };
 
         Ok(Self {
             phase: "phase1".into(),
@@ -83,6 +116,7 @@ impl CeremonyState {
             phase2_parameters: None,
             contributors_phase1: coord.transcript().phase1_contributors().to_vec(),
             contributors_phase2: Vec::new(),
+            phase1_proof,
         })
     }
 
@@ -103,6 +137,7 @@ impl CeremonyState {
             phase2_parameters: Some(buf),
             contributors_phase1: coord.transcript().phase1_contributors().to_vec(),
             contributors_phase2: coord.transcript().phase2_contributors().to_vec(),
+            phase1_proof: None,
         })
     }
 
@@ -173,7 +208,7 @@ fn cmd_init(
     let mut coord = CeremonyCoordinator::new(powers);
     coord.initialize_phase1()?;
     let params = coord.current_phase1_challenge()?;
-    let state = CeremonyState::from_coordinator_phase1(&coord, params)?;
+    let state = CeremonyState::from_coordinator_phase1(&coord, params, None)?;
     state.save(output)?;
     println!("✓ Ceremony initialized. Saved to {}", output.display());
     println!("  Challenge hash: {}", hex::encode(params.challenge_hash()));
@@ -198,14 +233,24 @@ fn cmd_contribute(
         contrib.verify(&challenge)?;
         println!("  ✓ Self-verification passed");
 
-        let mut coord = CeremonyCoordinator::new(state.num_powers);
-        coord.initialize_phase1()?;
+        // Resume from the loaded accumulator rather than re-initializing. A fresh
+        // coordinator starts at the identity, so `verify_and_apply_phase1` would
+        // reject this contribution on a parent-challenge mismatch as soon as the
+        // ceremony has one prior contribution.
+        let mut coord = CeremonyCoordinator::resume_phase1(
+            challenge.clone(),
+            state.contributors_phase1.clone(),
+        );
         for prev_contrib in &state.contributors_phase1 {
-            println!("    (replaying previous contributor: {})", prev_contrib);
+            println!("    (prior contributor on record: {})", prev_contrib);
         }
         coord.verify_and_apply_phase1(&contrib)?;
 
-        let new_state = CeremonyState::from_coordinator_phase1(&coord, &contrib.new_parameters)?;
+        let new_state = CeremonyState::from_coordinator_phase1(
+            &coord,
+            &contrib.new_parameters,
+            Some(&contrib.proof),
+        )?;
         new_state.save(output)?;
         println!("✓ Contribution saved to {}", output.display());
         println!("  New challenge hash: {}", hex::encode(contrib.new_parameters.challenge_hash()));
@@ -217,9 +262,11 @@ fn cmd_contribute(
         contrib.verify(&challenge)?;
         println!("  ✓ Contribution computed and verified");
 
-        let mut coord = CeremonyCoordinator::new(state.num_powers);
-        coord.initialize_phase1()?;
-        // Replay would go here for full persistence.
+        let mut coord = CeremonyCoordinator::resume_phase2(
+            challenge.clone(),
+            state.contributors_phase1.clone(),
+            state.contributors_phase2.clone(),
+        );
         coord.verify_and_apply_phase2(&contrib)?;
 
         let new_state = CeremonyState::from_coordinator_phase2(&coord, &contrib.new_parameters)?;
@@ -252,17 +299,22 @@ fn cmd_verify(
             return Err("contribution index did not increment by 1".into());
         }
 
-        // Build a contribution that matches the after state.
+        // Reconstruct the contribution from the after state. The proof of
+        // knowledge has to come from the file: the accumulator on its own says
+        // nothing about whether the contributor knew an exponent, and a
+        // placeholder proof here would make this command either always fail or,
+        // worse, report success without checking anything.
+        let proof_bytes = state_after.phase1_proof.as_ref().ok_or(
+            "after state carries no contribution proof; it was written by an older \
+             version of this tool, so the proof of knowledge cannot be checked",
+        )?;
         let contrib = Phase1Contribution {
             contributor: state_after.contributors_phase1.last()
                 .ok_or("no contributors in after state")?
                 .clone(),
             parent_challenge: params_before.challenge_hash(),
             new_parameters: params_after.clone(),
-            proof: chronos_snark::ceremony::Phase1Proof {
-                commit_g1: params_after.tau_powers_g1[0], // Placeholder
-                response: ark_bn254::Fr::from(0u64),
-            },
+            proof: decode_phase1_proof(proof_bytes)?,
         };
 
         contrib.verify(&params_before)?;
@@ -292,9 +344,13 @@ fn cmd_transition(
         return Err("Phase 1 must have at least one contribution before transitioning".into());
     }
 
-    let mut coord = CeremonyCoordinator::new(state.num_powers);
-    coord.initialize_phase1()?;
-    // In a real implementation, replay all Phase 1 contributions here.
+    // Resume from the persisted accumulator. Building a fresh coordinator here
+    // would reset the SRS to the identity (τ = 1) and throw away every
+    // contribution recorded in the state file.
+    let mut coord = CeremonyCoordinator::resume_phase1(
+        phase1_params,
+        state.contributors_phase1.clone(),
+    );
     coord.finalize_phase1_and_start_phase2()?;
 
     let phase2_params = coord.current_phase2_challenge()?;
@@ -328,23 +384,17 @@ fn cmd_finalize(
     println!();
     println!("Deriving keys from ceremony transcript...");
 
-    // Reconstruct the coordinator with all contributions.
-    let mut coord = CeremonyCoordinator::new(state.num_powers);
-    coord.initialize_phase1()?;
-    
-    // In a full implementation, replay all Phase 1 contributions from the transcript.
-    // For now, we trust the state's Phase 2 parameters already incorporate them.
-    // This is safe because the parameters are hash-chained and verified.
-    
-    // Manually set Phase 2 state.
-    use chronos_snark::ceremony::Phase2Parameters;
-    coord.finalize_phase1_and_start_phase2()?;
-    
-    // Apply Phase 2 state from file.
-    // (In production, replay Phase 2 contributions as well.)
-    
-    // For this prototype, we'll generate keys directly from the current state.
-    // The coordinator's finalize() derives keys deterministically from the transcript.
+    // Resume from the persisted Phase 2 parameters. The key derivation seed is a
+    // hash of the Phase 2 and Phase 1 accumulators, so resuming from the real
+    // state is what binds the keys to the contributions. A fresh coordinator
+    // would start from the identity accumulator and also fail the
+    // "phase 2 must have at least one contribution" check below.
+    let mut coord = CeremonyCoordinator::resume_phase2(
+        phase2_params,
+        state.contributors_phase1.clone(),
+        state.contributors_phase2.clone(),
+    );
+
     let (pk, vk) = coord.finalize()?;
 
     // Save proving key.

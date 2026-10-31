@@ -108,12 +108,11 @@
 //!   The novelty here is zero: this is the standard construction, implemented for
 //!   CHRONOS's erasure circuit.
 
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
-use ark_crypto_primitives::snark::SNARK;
+use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
 use ark_ff::{Field, PrimeField, UniformRand};
 use ark_groth16::{ProvingKey, Groth16, VerifyingKey};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::CanonicalSerialize;
 use chronos_core::{ChronosError, ChronosResult};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -237,7 +236,7 @@ impl Phase1Contribution {
         let mut rng = StdRng::from_entropy();
 
         // Sample the participant's secret τ.
-        let tau = Fr::rand(&mut rng);
+        let mut tau = Fr::rand(&mut rng);
 
         // Exponentiate each power: [τ'ⁱ]₁ → [τ ⋅ τ'ⁱ]₁.
         let mut new_g1 = Vec::with_capacity(challenge.tau_powers_g1.len());
@@ -265,7 +264,7 @@ impl Phase1Contribution {
         // Proof of knowledge: Schnorr protocol.
         // We prove knowledge of τ such that new_g1[1] = old_g1[1]^τ.
         // (Checking all powers would cost O(n) pairings; one suffices for soundness.)
-        let r = Fr::rand(&mut rng);
+        let mut r = Fr::rand(&mut rng);
         let commit_g1 = challenge.tau_powers_g1[1].mul(r).into_affine();
 
         let c = Self::proof_challenge(&commit_g1, &new_parameters);
@@ -273,11 +272,22 @@ impl Phase1Contribution {
 
         let proof = Phase1Proof { commit_g1, response };
 
-        // SAFETY: Wipe τ from memory. It must not leave this function.
-        // Rust does not guarantee zeroization of stack values, but this is
-        // defense-in-depth.
-        drop(tau);
-        drop(r);
+        // Overwrite the toxic waste before returning. `Fr` is `Copy` and has no
+        // `Drop`, so `drop(tau)` would be a no-op and the bytes would stay on the
+        // stack until something else happens to reuse the frame. A volatile write
+        // cannot be elided by the optimizer, and the fence stops it being sunk
+        // past the end of the function.
+        //
+        // This is defense-in-depth, not a guarantee: the loops above already let
+        // LLVM keep copies of `tau` in registers or spill slots we cannot name,
+        // and `Fr::rand` may have left a copy inside the RNG buffer.
+        unsafe {
+            core::ptr::write_volatile(&mut tau, Fr::ZERO);
+            core::ptr::write_volatile(&mut r, Fr::ZERO);
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        debug_assert_eq!(tau, Fr::ZERO);
+        debug_assert_eq!(r, Fr::ZERO);
 
         Ok(Self {
             contributor: contributor.into(),
@@ -465,6 +475,57 @@ impl CeremonyCoordinator {
         }
     }
 
+    /// Rebuild a coordinator from persisted Phase 1 state.
+    ///
+    /// A ceremony runs across many processes: each participant loads the previous
+    /// accumulator from a file, contributes, and writes a new one. Without this,
+    /// a fresh process can only start from the identity accumulator, which would
+    /// silently discard every contribution made so far.
+    ///
+    /// `contributors` is the contributor list read from the persisted transcript.
+    /// It is recorded verbatim; this constructor does not re-verify the chain,
+    /// because the individual contribution proofs are what carry the soundness and
+    /// they are checked by [`Phase1Contribution::verify`] when each one is applied.
+    #[must_use]
+    pub fn resume_phase1(params: Phase1Parameters, contributors: Vec<String>) -> Self {
+        let mut transcript = CeremonyTranscript::new(params.num_powers());
+        // `phase1_init_hash` stays `None`: the identity accumulator was hashed in
+        // whichever process ran `initialize_phase1`, and claiming the resumed
+        // accumulator's hash here would mislabel it.
+        transcript.phase1_contributors = contributors;
+        Self {
+            phase1: Some(params),
+            phase2: None,
+            transcript,
+        }
+    }
+
+    /// Rebuild a coordinator from persisted Phase 2 state.
+    ///
+    /// See [`Self::resume_phase1`] for why this exists.
+    #[must_use]
+    pub fn resume_phase2(
+        params: Phase2Parameters,
+        phase1_contributors: Vec<String>,
+        phase2_contributors: Vec<String>,
+    ) -> Self {
+        let mut transcript = CeremonyTranscript::new(params.phase1.num_powers());
+        transcript.phase1_contributors = phase1_contributors;
+        // Phase 1 is frozen once Phase 2 starts, so its final hash is recoverable
+        // from the resumed state. The Phase 2 init hash is only recoverable while
+        // no Phase 2 contribution has been applied yet.
+        transcript.phase1_final_hash = Some(params.phase1.challenge_hash());
+        if params.contribution_index == 0 {
+            transcript.phase2_init_hash = Some(params.challenge_hash());
+        }
+        transcript.phase2_contributors = phase2_contributors;
+        Self {
+            phase1: None,
+            phase2: Some(params),
+            transcript,
+        }
+    }
+
     /// Initialize Phase 1 (identity accumulator).
     pub fn initialize_phase1(&mut self) -> ChronosResult<()> {
         if self.phase1.is_some() {
@@ -555,9 +616,10 @@ impl CeremonyCoordinator {
     /// # Errors
     /// Returns [`ChronosError::Ceremony`] if Phase 2 has no contributions or key
     /// generation fails.
-    pub fn finalize(self) -> ChronosResult<(ProvingKey<Bn254>, VerifyingKey<Bn254>)> {
+    pub fn finalize(&mut self) -> ChronosResult<(ProvingKey<Bn254>, VerifyingKey<Bn254>)> {
         let phase2 = self
             .phase2
+            .as_ref()
             .ok_or_else(|| ChronosError::Ceremony("phase 2 not initialized".into()))?;
 
         if phase2.contribution_index == 0 {
@@ -619,6 +681,18 @@ impl CeremonyCoordinator {
 
         let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, &mut rng)
             .map_err(|e| ChronosError::Ceremony(format!("key generation failed: {e}")))?;
+
+        // Record the state the keys were derived from, so an auditor reading the
+        // published transcript can recompute the finalize seed and re-derive the
+        // same keys.
+        let final_hash = {
+            let phase2 = self
+                .phase2
+                .as_ref()
+                .expect("phase 2 presence was checked above");
+            phase2.challenge_hash()
+        };
+        self.transcript.phase2_final_hash = Some(final_hash);
 
         Ok((pk, vk))
     }
@@ -687,11 +761,46 @@ impl CeremonyTranscript {
     pub fn phase2_contributors(&self) -> &[String] {
         &self.phase2_contributors
     }
+
+    /// Number of powers the SRS was initialized with.
+    #[must_use]
+    pub fn num_powers(&self) -> usize {
+        self.num_powers
+    }
+
+    /// Challenge hash of the empty Phase 1 accumulator, or `None` before
+    /// `initialize_phase1`.
+    #[must_use]
+    pub fn phase1_init_hash(&self) -> Option<[u8; 32]> {
+        self.phase1_init_hash
+    }
+
+    /// Challenge hash of the Phase 1 accumulator at the Phase 2 handover, or
+    /// `None` before `finalize_phase1_and_start_phase2`.
+    #[must_use]
+    pub fn phase1_final_hash(&self) -> Option<[u8; 32]> {
+        self.phase1_final_hash
+    }
+
+    /// Challenge hash of the initial Phase 2 parameters, or `None` before the
+    /// handover.
+    #[must_use]
+    pub fn phase2_init_hash(&self) -> Option<[u8; 32]> {
+        self.phase2_init_hash
+    }
+
+    /// Challenge hash of the Phase 2 parameters the keys were derived from, or
+    /// `None` before `finalize`.
+    #[must_use]
+    pub fn phase2_final_hash(&self) -> Option<[u8; 32]> {
+        self.phase2_final_hash
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_serialize::CanonicalDeserialize;
 
     #[test]
     fn test_phase1_init_produces_identity() {
@@ -984,6 +1093,104 @@ mod tests {
         assert!(
             coord.current_phase1_challenge().is_err(),
             "challenge before init must error"
+        );
+    }
+
+    /// A ceremony spans processes: each contributor loads the accumulator from a
+    /// file. Resuming has to continue the chain, so the next contribution must
+    /// verify against the resumed state. A coordinator rebuilt with `new` plus
+    /// `initialize_phase1` resets to the identity accumulator and rejects the
+    /// next contribution on a parent-challenge mismatch, which is exactly what
+    /// `resume_phase1` exists to prevent.
+    #[test]
+    fn test_resume_phase1_continues_the_contribution_chain() {
+        let genesis = Phase1Parameters::init(8);
+        let first = Phase1Contribution::contribute(&genesis, "alice").expect("contribute");
+
+        // Alice's output is what a second process would read back from disk.
+        let loaded = first.new_parameters.clone();
+        let mut resumed =
+            CeremonyCoordinator::resume_phase1(loaded.clone(), vec!["alice".into()]);
+
+        let second = Phase1Contribution::contribute(&loaded, "bob").expect("contribute");
+        resumed
+            .verify_and_apply_phase1(&second)
+            .expect("a contribution on top of the resumed accumulator must verify");
+
+        assert_eq!(
+            resumed.transcript().phase1_contributors(),
+            ["alice".to_string(), "bob".to_string()],
+            "resuming must keep the earlier contributors on record"
+        );
+        assert_eq!(
+            resumed
+                .current_phase1_challenge()
+                .expect("phase 1 present")
+                .contribution_index,
+            2,
+            "the index must continue from the resumed state, not restart"
+        );
+
+        // The failure mode being guarded against.
+        let mut reset = CeremonyCoordinator::new(8);
+        reset.initialize_phase1().expect("init");
+        assert!(
+            reset.verify_and_apply_phase1(&second).is_err(),
+            "a reset coordinator must reject a contribution built on a later parent"
+        );
+    }
+
+    /// `finalize` derives the keys from the Phase 2 accumulator, so a resumed
+    /// Phase 2 must produce the same keys as the coordinator that never stopped.
+    #[test]
+    fn test_resume_phase2_derives_the_same_keys() {
+        let mut coord = CeremonyCoordinator::new(16);
+        coord.initialize_phase1().expect("init");
+        let c1 = coord.current_phase1_challenge().expect("challenge").clone();
+        let p1 = Phase1Contribution::contribute(&c1, "alice").expect("contribute");
+        coord.verify_and_apply_phase1(&p1).expect("apply");
+        coord
+            .finalize_phase1_and_start_phase2()
+            .expect("transition");
+        let c2 = coord.current_phase2_challenge().expect("challenge").clone();
+        let p2 = Phase2Contribution::contribute(&c2, "bob").expect("contribute");
+        coord.verify_and_apply_phase2(&p2).expect("apply");
+
+        let persisted = coord.current_phase2_challenge().expect("phase 2").clone();
+        let (pk_live, vk_live) = coord.finalize().expect("finalize");
+
+        let mut resumed = CeremonyCoordinator::resume_phase2(
+            persisted,
+            vec!["alice".into()],
+            vec!["bob".into()],
+        );
+        let (pk_resumed, vk_resumed) = resumed.finalize().expect("finalize");
+
+        let mut vk_live_bytes = Vec::new();
+        vk_live.serialize_compressed(&mut vk_live_bytes).expect("serialize");
+        let mut vk_resumed_bytes = Vec::new();
+        vk_resumed.serialize_compressed(&mut vk_resumed_bytes).expect("serialize");
+        let mut pk_live_bytes = Vec::new();
+        pk_live.serialize_compressed(&mut pk_live_bytes).expect("serialize");
+        let mut pk_resumed_bytes = Vec::new();
+        pk_resumed.serialize_compressed(&mut pk_resumed_bytes).expect("serialize");
+        assert_eq!(
+            vk_live_bytes, vk_resumed_bytes,
+            "resumed verifying key must match the live ceremony"
+        );
+        assert_eq!(
+            pk_live_bytes, pk_resumed_bytes,
+            "resumed proving key must match the live ceremony"
+        );
+        assert_eq!(
+            resumed.transcript().phase2_final_hash(),
+            Some(
+                resumed
+                    .current_phase2_challenge()
+                    .expect("phase 2")
+                    .challenge_hash()
+            ),
+            "finalize must record the state the keys were derived from"
         );
     }
 

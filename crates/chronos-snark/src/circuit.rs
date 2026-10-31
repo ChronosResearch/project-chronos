@@ -74,6 +74,8 @@
 use ark_bn254::Fr;
 use ark_ff::Zero;
 use ark_r1cs_std::alloc::AllocVar;
+use ark_r1cs_std::bits::boolean::Boolean;
+use ark_r1cs_std::bits::ToBitsGadget;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
 use core::cmp::Ordering;
@@ -375,6 +377,21 @@ impl PublicInputs {
 ///
 /// Held separately from the circuit so the caller can wipe it explicitly after
 /// proving; it contains the plaintext secret key.
+///
+/// # Wiping
+///
+/// This type implements [`Drop`] to zeroize `sk` and `y`, because the surrounding
+/// documentation has long claimed "the witness copy wiped immediately
+/// afterwards" while nothing actually did it. The witness is moved into the
+/// proving task and dropped there, so a `Drop` impl is the only place the wipe can
+/// happen without the caller having to remember.
+///
+/// This narrows the `F_OS` gap slightly and does not close it. These are ordinary
+/// heap and stack bytes, not `mlock`ed pages, so the value may have been copied
+/// by the allocator or paged out before the wipe runs. The authoritative copy of
+/// the key still lives in `LockedBytes` in the agent, and that one is wiped
+/// properly. What this removes is the case where the plaintext key sat in a
+/// `Vec` that was simply freed.
 #[derive(Clone)]
 pub struct ErasureWitness {
     /// VDF output, big-endian, exactly [`Y_BYTES`] bytes.
@@ -391,6 +408,29 @@ pub struct ErasureWitness {
     pub mission_digest: [u8; MISSION_BYTES],
     /// Terminal containment summary.
     pub containment: ContainmentSummary,
+}
+
+impl Drop for ErasureWitness {
+    /// Zeroize the secret material. See the type-level note on what this does and
+    /// does not buy.
+    ///
+    /// `write_volatile` plus a compiler fence, rather than a plain loop, so the
+    /// writes are not elided as dead stores to a value that is about to be freed.
+    fn drop(&mut self) {
+        use core::ptr;
+        use core::sync::atomic::{compiler_fence, Ordering as AtomicOrdering};
+
+        for b in &mut self.sk {
+            // SAFETY: `b` is a valid, aligned, writable `u8` for the duration.
+            unsafe { ptr::write_volatile(b, 0u8) };
+        }
+        for b in &mut self.y {
+            // SAFETY: as above. `y` is the VDF output, from which the decryption
+            // key is derived, so it is secret for the same reason `sk` is.
+            unsafe { ptr::write_volatile(b, 0u8) };
+        }
+        compiler_fence(AtomicOrdering::SeqCst);
+    }
 }
 
 impl ErasureWitness {
@@ -545,6 +585,41 @@ fn alloc_witness_elems(
         .collect()
 }
 
+/// Constrain `v` to the range of a `u64`, i.e. `v < 2^64`.
+///
+/// # Why this is load-bearing and not hygiene
+///
+/// Every numeric field of [`ContainmentSummary`] is a `u64` natively, but a
+/// witness variable is a *field* element, so a dishonest prover is free to supply
+/// any value in `[0, p)`. Two of the A6 checks below are comparisons, and
+/// `enforce_cmp` is sound only when both operands are known to be at most
+/// `(p-1)/2`. It constrains the operands it is handed, and in
+/// `incurred <= resolved + threshold` the operand is the *sum*, so the addends
+/// were never individually bounded.
+///
+/// That was exploitable. A prover could choose `resolved` and `threshold` near
+/// the modulus such that `resolved + threshold` wraps to a small element: the
+/// comparison then passes while the real inequality is false, and the proof
+/// attests an A6 bound the run never satisfied. A comment previously asserted
+/// that "both sides are sums of `u64` values, so they stay far below `(p-1)/2`",
+/// which is true of an honest prover and is exactly the kind of assumption a
+/// soundness argument cannot rest on.
+///
+/// With every numeric slot pinned below `2^64`, any sum of two of them is below
+/// `2^65`, which is far below `(p-1)/2` for BN254, so no sum can wrap and both
+/// comparisons mean what they say.
+///
+/// Cost is one canonical bit decomposition per element. `to_bits_le` already
+/// enforces that the bits reconstruct `v`, so asserting the top bits are zero is
+/// sufficient; no separate equality is needed.
+fn enforce_u64_range(v: &FpVar<Fr>) -> Result<(), SynthesisError> {
+    let bits = v.to_bits_le()?;
+    for bit in bits.iter().skip(64) {
+        bit.enforce_equal(&Boolean::FALSE)?;
+    }
+    Ok(())
+}
+
 impl ConstraintSynthesizer<Fr> for ErasureCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         let w = self.witness;
@@ -672,12 +747,24 @@ impl ConstraintSynthesizer<Fr> for ErasureCircuit {
         // Slots 9 to 12 are `uncertainty_incurred`, `uncertainty_resolved`,
         // `peak_uncertainty` and `autonomy_threshold`.
         //
+        // Range-constrain every numeric slot to `u64` *before* comparing any of
+        // them. Slots 7 and 8 are the two halves of the SHA-256 chain head, which
+        // are 128-bit by construction and are never compared, so they are
+        // excluded. See `enforce_u64_range` for why omitting this was a soundness
+        // break rather than missing hygiene.
+        for (i, slot) in summary.iter().enumerate() {
+            if i == 7 || i == 8 {
+                continue;
+            }
+            enforce_u64_range(slot)?;
+        }
+
         // First the terminal form, `incurred <= resolved + threshold`. Written as
         // an addition on the right because the field has no saturating
         // subtraction: `incurred - resolved` would wrap to an enormous element
         // whenever corrections over-resolve, and the comparison would fail on a
-        // run that is actually compliant. Both sides are sums of `u64` values, so
-        // they stay far below `(p-1)/2` and the checked comparison is sound.
+        // run that is actually compliant. The addends are now individually
+        // bounded below `2^64`, so the sum is below `2^65` and cannot wrap.
         let a6_bound = &summary[10] + &summary[12];
         summary[9].enforce_cmp(&a6_bound, Ordering::Less, true)?;
 
@@ -1350,6 +1437,66 @@ mod tests {
         assert!(
             (2_000..20_000).contains(&n),
             "expected a few thousand constraints for the full chain, got {n}"
+        );
+    }
+
+    /// The range check must actually reject an out-of-range element.
+    ///
+    /// This is the mechanism that makes the two A6 comparisons sound. Without it
+    /// a prover could choose `uncertainty_resolved` and `autonomy_threshold` near
+    /// the modulus so that their sum wraps to a small field element: the checked
+    /// comparison `incurred <= resolved + threshold` then passes while the real
+    /// inequality is false, and the proof attests an A6 bound the run never met.
+    ///
+    /// `ContainmentSummary`'s own fields are `u64`, so the honest API cannot
+    /// express the attack. That is not a defence: a prover writes its own witness
+    /// generator, so the constraint system has to carry the bound itself.
+    #[test]
+    fn test_u64_range_check_rejects_out_of_range_elements() {
+        // In range: the largest u64, and zero.
+        for v in [Fr::from(0u64), Fr::from(u64::MAX)] {
+            let cs = ConstraintSystem::<Fr>::new_ref();
+            let var = FpVar::new_witness(cs.clone(), || Ok(v)).expect("alloc");
+            enforce_u64_range(&var).expect("in-range value must synthesise");
+            assert!(
+                cs.is_satisfied().expect("satisfiability"),
+                "a value inside u64 must satisfy the range check"
+            );
+        }
+
+        // Out of range: 2^64 exactly, and a value chosen so that adding it to
+        // itself wraps the modulus, which is the shape of the real attack.
+        let two_64 = Fr::from(u64::MAX) + Fr::from(1u64);
+        for v in [two_64, -Fr::from(1u64)] {
+            let cs = ConstraintSystem::<Fr>::new_ref();
+            let var = FpVar::new_witness(cs.clone(), || Ok(v)).expect("alloc");
+            enforce_u64_range(&var).expect("synthesis itself must succeed");
+            assert!(
+                !cs.is_satisfied().expect("satisfiability"),
+                "a value at or above 2^64 must make the system unsatisfiable"
+            );
+        }
+    }
+
+    /// Every numeric summary slot is range-checked, so the count of constrained
+    /// slots cannot silently shrink if the encoding changes.
+    ///
+    /// Slots 7 and 8 are the two halves of the SHA-256 chain head, which are
+    /// 128-bit by construction and never compared, so they are deliberately
+    /// excluded.
+    #[test]
+    fn test_every_numeric_summary_slot_is_range_checked() {
+        let checked: Vec<usize> = (0..ContainmentSummary::ELEMS)
+            .filter(|i| *i != 7 && *i != 8)
+            .collect();
+        assert_eq!(
+            checked.len(),
+            12,
+            "14 summary elements minus the two chain-head limbs"
+        );
+        assert!(
+            !checked.contains(&7) && !checked.contains(&8),
+            "the chain-head limbs are 128-bit and must not be u64-constrained"
         );
     }
 

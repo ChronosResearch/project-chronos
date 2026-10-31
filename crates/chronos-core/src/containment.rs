@@ -335,6 +335,16 @@ pub enum DenyReason {
     /// anchor (A7): forged, replayed, out of order, amount-tampered, or the chain
     /// is exhausted. The monitor does not distinguish these cases.
     CorrectionUnauthorized,
+    /// [`ContainmentState::step`] produced a successor that is not above the
+    /// current state in the lattice, so A1 to A3 would be violated by committing
+    /// it.
+    ///
+    /// Unreachable if [`verify_axioms`] passed at startup, and retained as
+    /// defence in depth against a future edit to `step`. It exists as a distinct
+    /// reason because the previous behaviour was to discard the successor while
+    /// still returning the original verdict, which let an admitted operation
+    /// proceed having consumed no budget.
+    LatticeViolation,
 }
 
 impl fmt::Display for DenyReason {
@@ -352,6 +362,9 @@ impl fmt::Display for DenyReason {
             }
             DenyReason::CorrectionUnauthorized => {
                 "correction grant does not authorise against the current anchor"
+            }
+            DenyReason::LatticeViolation => {
+                "successor state is not above the current state in the containment lattice"
             }
         };
         f.write_str(s)
@@ -386,6 +399,10 @@ impl Decision {
             Decision::Deny(DenyReason::DeadlineExceeded) => 5,
             Decision::Deny(DenyReason::UncertaintyTooHigh) => 6,
             Decision::Deny(DenyReason::CorrectionUnauthorized) => 7,
+            // Appended, not inserted. These codes are folded into the ledger
+            // hash chain that published attestations commit to, so renumbering an
+            // existing variant would invalidate every attestation already issued.
+            Decision::Deny(DenyReason::LatticeViolation) => 8,
         }
     }
 }
@@ -899,12 +916,19 @@ impl ContainmentLedger {
     pub fn admit(&mut self, event: Event) -> Decision {
         let (decision, next) = self.state.step(event);
 
-        let committed = if self.state.precedes(&next) {
-            next
+        // A lattice violation refuses the *operation*, not merely the state
+        // change. Keeping the caller's `Admit` while discarding the successor
+        // would let the agent perform the work having consumed no budget, and
+        // would write a ledger record claiming an admitted event whose
+        // before-state and after-state are identical. Both of those are worse
+        // than a denial: the first is free capability, the second is a record
+        // that misdescribes what happened.
+        let (decision, committed) = if self.state.precedes(&next) {
+            (decision, next)
         } else {
-            // Unreachable given a passing startup check. Refuse rather than
-            // commit a state that breaks the lattice.
-            self.state
+            // Unreachable given a passing startup check. Deny rather than commit
+            // a state that breaks the lattice.
+            (Decision::Deny(DenyReason::LatticeViolation), self.state)
         };
 
         let record = LedgerRecord {
@@ -993,7 +1017,26 @@ impl AxiomReport {
     }
 }
 
-/// Exhaustively verify A1–A6 over the reachable abstract state space.
+/// Exhaustively verify A1 to A7 over the reachable abstract state space.
+///
+/// # What "verified" means here, and what it does not
+///
+/// This is a bounded model check over a three-valued interval abstraction, not a
+/// proof over the real `u64` state space. Two of the seven axioms are also weaker
+/// than the others by construction, and saying so is the point:
+///
+/// - **A5 cannot fail as written.** It applies `Event::Erase` and asserts the
+///   result is admitted and `Erased`. `step` handles `Erase` in its first match
+///   arm with no guards, so this can only break if someone adds a guard there.
+///   It is a regression guard on that specific edit, not an independent check.
+/// - **A4 and A1 are mirrors rather than oracles.** The A4 check re-evaluates the
+///   same `elapsed + declared > deadline` expression `step` just used, so a wrong
+///   bound in `step` is reproduced here and passes. A1 can only fail if `step`
+///   gains a capability write that is not a `revoke`.
+///
+/// The checks that genuinely constrain behaviour are A2, A3, A6 and A7, and A7's
+/// hash comparison is handled by instantiating two concrete anchors rather than by
+/// the abstraction, because no interval approximates a preimage.
 ///
 /// The abstraction fixes `deadline_secs = 2`, `autonomy_threshold = 2` and draws
 /// each numeric quantity from `{0, 1, 2}`, standing for exhausted, exactly-one-unit-left,
@@ -1067,135 +1110,7 @@ pub fn verify_axioms() -> AxiomReport {
         for event in &events {
             let (decision, to) = from.step(*event);
             transitions_checked += 1;
-
-            let mut record = |axiom: &'static str, statement: &'static str| {
-                violations.push(AxiomViolation {
-                    axiom,
-                    statement,
-                    from: *from,
-                    event: *event,
-                    to,
-                });
-            };
-
-            // A1, capability decay.
-            if !to.granted.is_subset_of(from.granted) {
-                record("A1", "granted(s') must be a subset of granted(s)");
-            }
-
-            // A2, budget decay (and monotone ascent for uncertainty accumulators).
-            if to.op_budget > from.op_budget
-                || to.disclosure_budget_bits > from.disclosure_budget_bits
-                || to.uncertainty_incurred < from.uncertainty_incurred
-                || to.uncertainty_resolved < from.uncertainty_resolved
-                || to.peak_uncertainty < from.peak_uncertainty
-            {
-                record("A2", "every budget must be monotone in its direction");
-            }
-
-            // A3, phase irreversibility.
-            if to.phase < from.phase {
-                record("A3", "phase must never descend");
-            }
-
-            // A4, deadline dominance. Only constrains admitted work-performing
-            // events; an admitted Infer must be able to finish before the
-            // deadline.
-            if decision.is_admitted() {
-                if let Event::Infer { declared_secs, .. } = event {
-                    if from.elapsed_secs.saturating_add(*declared_secs) > from.deadline_secs {
-                        record(
-                            "A4",
-                            "an admitted operation must complete before the mission deadline",
-                        );
-                    }
-                }
-            }
-
-            // A5, erasure liveness from the successor state.
-            let (erase_decision, erased) = to.step(Event::Erase);
-            if !erase_decision.is_admitted() || erased.phase != Phase::Erased {
-                record("A5", "Erased must be reachable in one step from every state");
-            }
-
-            // A6, EPISTEMIC HUMILITY (the interruptibility primitive).
-            // If an Infer event is admitted, verify that the resulting self-reported
-            // uncertainty does not exceed the autonomy threshold. This enforces
-            // interruptibility conditional on honest self-report.
-            if decision.is_admitted() {
-                if let Event::Infer { .. } = event {
-                    let net_uncertainty = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
-                    if net_uncertainty > to.autonomy_threshold {
-                        record(
-                            "A6",
-                            "an admitted inference must not cause self-reported uncertainty to exceed autonomy threshold",
-                        );
-                    }
-                }
-            }
-
-            // A6 per-step, in the form that survives into the proof. The check
-            // above is evaluated transition by transition and then discarded; the
-            // high-water mark is what a verifier can still see at the end of the
-            // run. Two obligations: the mark must dominate the net uncertainty the
-            // successor holds, so no transition can pass through a level without
-            // recording it, and the mark must not exceed the threshold, so a run
-            // that was ever over the line is permanently distinguishable from one
-            // that was not, whatever corrections followed.
-            //
-            // Both are stated inductively, conditioned on the predecessor already
-            // satisfying them. That is deliberate: the enumeration is a full cross
-            // product and so includes states no run can reach, such as a zero mark
-            // beside a nonzero net. Requiring the property unconditionally would
-            // flag those, which says nothing about `step`. Requiring preservation
-            // says the real thing, that no transition can be the first to break it,
-            // and the initial state from `ContainmentState::new` satisfies both.
-            let net_before = from
-                .uncertainty_incurred
-                .saturating_sub(from.uncertainty_resolved);
-            let net_after = to.uncertainty_incurred.saturating_sub(to.uncertainty_resolved);
-            if from.peak_uncertainty >= net_before && to.peak_uncertainty < net_after {
-                record(
-                    "A6",
-                    "peak uncertainty must dominate the net uncertainty of every successor state",
-                );
-            }
-            if decision.is_admitted()
-                && from.peak_uncertainty <= from.autonomy_threshold
-                && to.peak_uncertainty > to.autonomy_threshold
-            {
-                record(
-                    "A6",
-                    "no admitted event may raise peak uncertainty above the autonomy threshold",
-                );
-            }
-
-            // A7, NON-SELF-AUTHORISATION. Uncertainty may only be resolved by a
-            // grant that authorises against the anchor held *before* the
-            // transition, and every such grant must advance the chain. Without
-            // this, A6 is bookkeeping the agent can rewrite at will.
-            if to.uncertainty_resolved > from.uncertainty_resolved {
-                match event {
-                    Event::HumanCorrection { grant }
-                        if grant.authorises(&from.correction_anchor)
-                            && to.correction_anchor == grant.next_anchor
-                            && to.corrections_consumed > from.corrections_consumed => {}
-                    _ => record(
-                        "A7",
-                        "uncertainty may only be resolved by an authorised correction grant that advances the chain",
-                    ),
-                }
-            }
-            if decision.is_admitted() {
-                if let Event::HumanCorrection { grant } = event {
-                    if !grant.authorises(&from.correction_anchor) {
-                        record(
-                            "A7",
-                            "an unauthorised correction grant must never be admitted",
-                        );
-                    }
-                }
-            }
+            check_transition(*from, *event, decision, to, &mut violations);
         }
     }
 
@@ -1203,6 +1118,153 @@ pub fn verify_axioms() -> AxiomReport {
         states_explored: states.len(),
         transitions_checked,
         violations,
+    }
+}
+
+/// Check A1 to A7 on a single transition, appending any violation found.
+///
+/// Split out of [`verify_axioms`] so the predicates can be exercised against a
+/// successor state that was *not* produced by [`ContainmentState::step`]. Without
+/// that, nothing tests whether these predicates can fire at all, and a passing
+/// [`AxiomReport`] would be consistent with a check that looks at nothing. See
+/// `tests::test_violation_detector_is_not_vacuous`.
+fn check_transition(
+    from: ContainmentState,
+    event: Event,
+    decision: Decision,
+    to: ContainmentState,
+    violations: &mut Vec<AxiomViolation>,
+) {
+    let mut record = |axiom: &'static str, statement: &'static str| {
+        violations.push(AxiomViolation {
+            axiom,
+            statement,
+            from,
+            event,
+            to,
+        });
+    };
+
+    // A1, capability decay.
+    if !to.granted.is_subset_of(from.granted) {
+        record("A1", "granted(s') must be a subset of granted(s)");
+    }
+
+    // A2, budget decay (and monotone ascent for uncertainty accumulators).
+    if to.op_budget > from.op_budget
+        || to.disclosure_budget_bits > from.disclosure_budget_bits
+        || to.uncertainty_incurred < from.uncertainty_incurred
+        || to.uncertainty_resolved < from.uncertainty_resolved
+        || to.peak_uncertainty < from.peak_uncertainty
+    {
+        record("A2", "every budget must be monotone in its direction");
+    }
+
+    // A3, phase irreversibility.
+    if to.phase < from.phase {
+        record("A3", "phase must never descend");
+    }
+
+    // A4, deadline dominance. Only constrains admitted work-performing events; an
+    // admitted Infer must be able to finish before the deadline.
+    if decision.is_admitted() {
+        if let Event::Infer { declared_secs, .. } = event {
+            if from.elapsed_secs.saturating_add(declared_secs) > from.deadline_secs {
+                record(
+                    "A4",
+                    "an admitted operation must complete before the mission deadline",
+                );
+            }
+        }
+    }
+
+    // A5, erasure liveness from the successor state.
+    let (erase_decision, erased) = to.step(Event::Erase);
+    if !erase_decision.is_admitted() || erased.phase != Phase::Erased {
+        record("A5", "Erased must be reachable in one step from every state");
+    }
+
+    // A6, EPISTEMIC HUMILITY (the interruptibility primitive).
+    // If an Infer event is admitted, verify that the resulting self-reported
+    // uncertainty does not exceed the autonomy threshold. This enforces
+    // interruptibility conditional on honest self-report.
+    if decision.is_admitted() {
+        if let Event::Infer { .. } = event {
+            let net_uncertainty = to
+                .uncertainty_incurred
+                .saturating_sub(to.uncertainty_resolved);
+            if net_uncertainty > to.autonomy_threshold {
+                record(
+                    "A6",
+                    "an admitted inference must not cause self-reported uncertainty to exceed autonomy threshold",
+                );
+            }
+        }
+    }
+
+    // A6 per-step, in the form that survives into the proof. The check above is
+    // evaluated transition by transition and then discarded; the high-water mark
+    // is what a verifier can still see at the end of the run. Two obligations:
+    // the mark must dominate the net uncertainty the successor holds, so no
+    // transition can pass through a level without recording it, and the mark must
+    // not exceed the threshold, so a run that was ever over the line is
+    // permanently distinguishable from one that was not, whatever corrections
+    // followed.
+    //
+    // Both are stated inductively, conditioned on the predecessor already
+    // satisfying them. That is deliberate: the enumeration is a full cross
+    // product and so includes states no run can reach, such as a zero mark beside
+    // a nonzero net. Requiring the property unconditionally would flag those,
+    // which says nothing about `step`. Requiring preservation says the real
+    // thing, that no transition can be the first to break it, and the initial
+    // state from `ContainmentState::new` satisfies both.
+    let net_before = from
+        .uncertainty_incurred
+        .saturating_sub(from.uncertainty_resolved);
+    let net_after = to
+        .uncertainty_incurred
+        .saturating_sub(to.uncertainty_resolved);
+    if from.peak_uncertainty >= net_before && to.peak_uncertainty < net_after {
+        record(
+            "A6",
+            "peak uncertainty must dominate the net uncertainty of every successor state",
+        );
+    }
+    if decision.is_admitted()
+        && from.peak_uncertainty <= from.autonomy_threshold
+        && to.peak_uncertainty > to.autonomy_threshold
+    {
+        record(
+            "A6",
+            "no admitted event may raise peak uncertainty above the autonomy threshold",
+        );
+    }
+
+    // A7, NON-SELF-AUTHORISATION. Uncertainty may only be resolved by a grant
+    // that authorises against the anchor held *before* the transition, and every
+    // such grant must advance the chain. Without this, A6 is bookkeeping the agent
+    // can rewrite at will.
+    if to.uncertainty_resolved > from.uncertainty_resolved {
+        match event {
+            Event::HumanCorrection { grant }
+                if grant.authorises(&from.correction_anchor)
+                    && to.correction_anchor == grant.next_anchor
+                    && to.corrections_consumed > from.corrections_consumed => {}
+            _ => record(
+                "A7",
+                "uncertainty may only be resolved by an authorised correction grant that advances the chain",
+            ),
+        }
+    }
+    if decision.is_admitted() {
+        if let Event::HumanCorrection { grant } = event {
+            if !grant.authorises(&from.correction_anchor) {
+                record(
+                    "A7",
+                    "an unauthorised correction grant must never be admitted",
+                );
+            }
+        }
     }
 }
 
@@ -1254,26 +1316,94 @@ mod tests {
         );
     }
 
-    /// The model checker must be capable of *finding* a violation, otherwise a
-    /// passing report means nothing. This deliberately breaks A1 and confirms the
-    /// A1 predicate rejects it.
+    /// The axiom predicates must be capable of *firing*, otherwise a clean
+    /// [`AxiomReport`] means nothing.
+    ///
+    /// This runs the same [`check_transition`] the model check runs, but on
+    /// successor states built by hand rather than produced by
+    /// [`ContainmentState::step`]. That is the only way to exercise the failure
+    /// path: `step` is sound, so no event it can be given will break an axiom, and
+    /// a test that only calls `step` can never tell a working check from one that
+    /// looks at nothing.
+    ///
+    /// An earlier version of this test asserted on `precedes()` and
+    /// `is_subset_of()` directly and never touched the model check at all, so it
+    /// did not establish the property its own name claimed.
     #[test]
     fn test_violation_detector_is_not_vacuous() {
-        let s = fresh();
-        let mut bad = s;
-        // Grant a capability that was not held, an A1 violation by construction.
-        bad.granted = Capabilities::none();
-        let restored = ContainmentState {
-            granted: Capabilities::all(),
-            ..bad
+        let base = ContainmentState {
+            granted: Capabilities::none(),
+            ..fresh()
         };
+        let event = Event::Erase;
+
+        // Each case: a predecessor, a hand-built successor that breaks exactly one
+        // axiom, and the axiom label the check must report.
+        let cases: [(&str, ContainmentState, ContainmentState); 4] = [
+            // A1: a capability reappears.
+            (
+                "A1",
+                base,
+                ContainmentState {
+                    granted: Capabilities::all(),
+                    ..base
+                },
+            ),
+            // A2: a spent budget grows back.
+            (
+                "A2",
+                base,
+                ContainmentState {
+                    op_budget: base.op_budget + 1,
+                    ..base
+                },
+            ),
+            // A3: the phase descends, Erased back to Active.
+            (
+                "A3",
+                ContainmentState {
+                    phase: Phase::Erased,
+                    ..base
+                },
+                ContainmentState {
+                    phase: Phase::Active,
+                    ..base
+                },
+            ),
+            // A6: the high-water mark fails to dominate the successor's net
+            // uncertainty, so a run could pass through a level without recording
+            // it.
+            (
+                "A6",
+                base,
+                ContainmentState {
+                    uncertainty_incurred: base.uncertainty_incurred + 2,
+                    peak_uncertainty: base.peak_uncertainty,
+                    ..base
+                },
+            ),
+        ];
+
+        for (axiom, from, to) in cases {
+            let mut violations = Vec::new();
+            check_transition(from, event, Decision::Admit, to, &mut violations);
+            assert!(
+                violations.iter().any(|v| v.axiom == axiom),
+                "{axiom} must be reported for a successor that breaks it, got {:?}",
+                violations.iter().map(|v| v.axiom).collect::<Vec<_>>()
+            );
+        }
+
+        // And the control: a successor the real transition function produced must
+        // raise nothing, so the cases above are not passing because the check
+        // flags everything.
+        let (decision, to) = base.step(event);
+        let mut violations = Vec::new();
+        check_transition(base, event, decision, to, &mut violations);
         assert!(
-            !restored.granted.is_subset_of(bad.granted),
-            "the A1 predicate must reject a capability that reappears"
-        );
-        assert!(
-            !bad.precedes(&restored),
-            "precedes() must reject a transition that re-grants a capability"
+            violations.is_empty(),
+            "a genuine transition must raise no violation, got {:?}",
+            violations.iter().map(|v| v.axiom).collect::<Vec<_>>()
         );
     }
 

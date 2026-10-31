@@ -30,19 +30,61 @@ const MILLER_RABIN_BASES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 3
 pub struct WesolowskiVdf;
 
 impl WesolowskiVdf {
-    /// Derive the Fiat-Shamir prime challenge `ℓ` from `(g, y, T)`.
+    /// Derive the Fiat-Shamir prime challenge `ℓ` from `(N, g, y, T)`.
     ///
-    /// `ℓ = next_prime(SHA-256(g || y || T)[0..8] as u64)`
+    /// `ℓ = next_prime(SHA-256(dom || len(N) || N || len(g) || g || len(y) || y || T))`
     ///
-    /// The derivation is byte-identical to the previous implementation; only the
-    /// primality test underneath it changed (trial division → Miller-Rabin).
-    fn fiat_shamir_prime(g: &BigUint, y: &BigUint, t: u64) -> u64 {
+    /// # Two defects this encoding fixes
+    ///
+    /// **The transcript was ambiguous.** `BigUint::to_bytes_be` strips leading
+    /// zeros, so concatenating two variable-length encodings with no separator
+    /// meant distinct `(g, y)` pairs could hash to the same transcript: the byte
+    /// string `ab || c` is indistinguishable from `a || bc`. Each field is now
+    /// length-prefixed, so the encoding is injective.
+    ///
+    /// **The challenge was not bound to the group.** `N` was never absorbed, so a
+    /// `(g, y, π, T)` transcript carried no commitment to the modulus it was
+    /// produced in and could be replayed against a different one. That matters
+    /// here specifically because the modulus has a documented fallback path, so
+    /// two deployments can disagree about `N` without either noticing.
+    ///
+    /// # What this does not fix
+    ///
+    /// `ℓ` is still drawn from a 64-bit seed, so the challenge space is about
+    /// `2^58` primes. Wesolowski soundness degrades with the size of that set, and
+    /// 128 bits would be the normal instantiation. Widening it is nearly free at
+    /// verification time, two modexps with a 128-bit rather than a 64-bit
+    /// exponent, and is deliberately left as separate work because it changes the
+    /// `u64` arithmetic throughout this module.
+    ///
+    /// Changing the derivation invalidates no stored artifact: the mission
+    /// commitments cover `y`, not `π`, and prover and verifier derive `ℓ`
+    /// identically through this one function.
+    fn fiat_shamir_prime(n: &BigUint, g: &BigUint, y: &BigUint, t: u64) -> u64 {
+        /// Domain separation tag, so this hash cannot collide with any other
+        /// SHA-256 use in the system.
+        const DOMAIN: &[u8] = b"chronos-wesolowski-fiat-shamir-v2";
+
         let mut hasher = Sha256::new();
-        hasher.update(g.to_bytes_be());
-        hasher.update(y.to_bytes_be());
+        hasher.update(DOMAIN);
+        // Length-prefix every variable-width field. u32 is ample: these are
+        // 2048-bit integers, and a length that did not fit would be a bug worth
+        // panicking on rather than silently truncating.
+        for field in [n, g, y] {
+            let bytes = field.to_bytes_be();
+            let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+            hasher.update(len.to_be_bytes());
+            hasher.update(&bytes);
+        }
         hasher.update(t.to_le_bytes());
         let digest = hasher.finalize();
-        let seed = u64::from_le_bytes(digest[..8].try_into().unwrap_or([0u8; 8]));
+        // `digest` is always 32 bytes, so this slice cannot fail. Indexing a
+        // fixed-size array rather than `try_into().unwrap_or([0; 8])` keeps a
+        // conversion failure from silently becoming an all-zero seed on a
+        // crypto-critical path.
+        let mut seed_bytes = [0u8; 8];
+        seed_bytes.copy_from_slice(&digest[..8]);
+        let seed = u64::from_le_bytes(seed_bytes);
         let mut candidate = seed | 1;
         if candidate < 3 {
             candidate = 3;
@@ -225,7 +267,7 @@ impl WesolowskiVdf {
             y = (&y * &y) % n;
         }
 
-        let ell = Self::fiat_shamir_prime(g, &y, t);
+        let ell = Self::fiat_shamir_prime(n, g, &y, t);
 
         // The proof is another T squarings, so it needs the same cancellation
         // check. Aborting here still means the mission failed: `y` alone is not
@@ -283,7 +325,7 @@ impl VdfEngine for WesolowskiVdf {
         }
 
         // Wesolowski proof: π = g^floor(2^T / ℓ) mod N
-        let ell = Self::fiat_shamir_prime(g, &y, t);
+        let ell = Self::fiat_shamir_prime(n, g, &y, t);
         let (pi, _r) = Self::prove(g, t, ell, n);
 
         Ok((y, VdfProof { proof: pi }))
@@ -297,11 +339,27 @@ impl VdfEngine for WesolowskiVdf {
             return false;
         }
 
+        // `T = 0` is not a mission, it is the absence of one. Returning `y == g`
+        // for it meant a caller who passed zero got a "valid" verification having
+        // performed no sequential work at all, which is the whole guarantee. The
+        // artifact loader also rejects `t_vdf_steps == 0`, so this is defence in
+        // depth rather than the only gate.
         if t == 0 {
-            return y == g;
+            return false;
         }
 
-        let ell = Self::fiat_shamir_prime(g, y, t);
+        // Reject non-canonical and degenerate group elements. Without this, a
+        // `y` or `π` at or above `N` verifies through the implicit reduction
+        // inside `modpow`, so two distinct encodings of the same residue are
+        // both accepted, and `g = y = 1` passes for any `T` with no work done.
+        if y >= n || &proof.proof >= n {
+            return false;
+        }
+        if g.is_zero() || g.is_one() {
+            return false;
+        }
+
+        let ell = Self::fiat_shamir_prime(n, g, y, t);
         let r = Self::two_pow_t_mod(t, ell);
 
         let ell_big = BigUint::from(ell);
@@ -393,11 +451,103 @@ mod tests {
         assert_send::<WesolowskiVdf>();
     }
 
+    /// The challenge must be bound to the modulus, so a transcript cannot be
+    /// replayed in a different group. Before the v2 encoding `N` was not absorbed
+    /// at all and this test would have failed.
+    #[test]
+    fn test_fiat_shamir_prime_is_bound_to_the_modulus() {
+        let g = BigUint::from(2u32);
+        let y = BigUint::from(100u32);
+        let a = WesolowskiVdf::fiat_shamir_prime(&BigUint::from(1_000_003u32), &g, &y, 10);
+        let b = WesolowskiVdf::fiat_shamir_prime(&BigUint::from(1_000_033u32), &g, &y, 10);
+        assert_ne!(
+            a, b,
+            "changing N must change the challenge, otherwise a (g, y, pi, T) \
+             transcript is replayable in another group"
+        );
+    }
+
+    /// The transcript encoding must be injective. `to_bytes_be` strips leading
+    /// zeros, so without length prefixes the pair `(0x01, 0x0203)` and the pair
+    /// `(0x0102, 0x03)` serialise to the same bytes and collide.
+    #[test]
+    fn test_fiat_shamir_encoding_is_unambiguous() {
+        let n = BigUint::from(1_000_003u32);
+        let left = WesolowskiVdf::fiat_shamir_prime(
+            &n,
+            &BigUint::from(0x01u32),
+            &BigUint::from(0x0203u32),
+            7,
+        );
+        let right = WesolowskiVdf::fiat_shamir_prime(
+            &n,
+            &BigUint::from(0x0102u32),
+            &BigUint::from(0x03u32),
+            7,
+        );
+        assert_ne!(
+            left, right,
+            "length-prefixing must separate the fields; a shared transcript here \
+             means distinct (g, y) pairs share a challenge"
+        );
+    }
+
+    /// `T = 0` is the absence of a mission, not a mission with a trivial proof.
+    /// Accepting it meant a caller got a passing verification for zero sequential
+    /// work, which is the entire guarantee.
+    #[test]
+    fn test_verify_rejects_zero_t() {
+        let vdf = WesolowskiVdf;
+        let g = BigUint::from(2u32);
+        let n = rsa_modulus();
+        let proof = VdfProof { proof: BigUint::one() };
+        assert!(
+            !vdf.verify(&g, &g, &proof, 0, &n),
+            "T = 0 must not verify, no sequential work was performed"
+        );
+    }
+
+    /// A non-canonical `y` or `pi` must be refused rather than silently reduced
+    /// inside `modpow`, which would make two encodings of one residue both valid.
+    #[test]
+    fn test_verify_rejects_non_canonical_inputs() -> ChronosResult<()> {
+        let vdf = WesolowskiVdf;
+        let g = BigUint::from(2u32);
+        let n = rsa_modulus();
+        let (y, proof) = vdf.evaluate(&g, 16, &n)?;
+        assert!(vdf.verify(&g, &y, &proof, 16, &n), "the honest proof must verify");
+
+        assert!(
+            !vdf.verify(&g, &(&y + &n), &proof, 16, &n),
+            "y + N must be refused as non-canonical"
+        );
+        let shifted = VdfProof { proof: &proof.proof + &n };
+        assert!(
+            !vdf.verify(&g, &y, &shifted, 16, &n),
+            "pi + N must be refused as non-canonical"
+        );
+        Ok(())
+    }
+
+    /// A degenerate generator does no work: `1^(2^T) = 1` for any `T`.
+    #[test]
+    fn test_verify_rejects_degenerate_generator() {
+        let vdf = WesolowskiVdf;
+        let n = rsa_modulus();
+        let one = BigUint::one();
+        let proof = VdfProof { proof: one.clone() };
+        assert!(
+            !vdf.verify(&one, &one, &proof, 1_000, &n),
+            "g = 1 must be refused: it reaches y = 1 with no sequential work"
+        );
+    }
+
     #[test]
     fn test_fiat_shamir_prime_is_prime() {
         let g = BigUint::from(2u32);
         let y = BigUint::from(100u32);
-        let ell = WesolowskiVdf::fiat_shamir_prime(&g, &y, 10);
+        let n = BigUint::from(1_000_003u32);
+        let ell = WesolowskiVdf::fiat_shamir_prime(&n, &g, &y, 10);
         assert!(WesolowskiVdf::is_prime(ell), "Fiat-Shamir output must be prime");
     }
 
@@ -456,7 +606,7 @@ mod tests {
         let n = rsa_modulus();
 
         for t in [1u64, 2, 7, 32, 100, 257] {
-            let ell = WesolowskiVdf::fiat_shamir_prime(&g, &BigUint::from(3u32), t);
+            let ell = WesolowskiVdf::fiat_shamir_prime(&n, &g, &BigUint::from(3u32), t);
             let (pi, r) = WesolowskiVdf::prove(&g, t, ell, &n);
 
             // Naive reference: materialise 2^T, divide, exponentiate.

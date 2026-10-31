@@ -272,8 +272,46 @@ impl MissionPublic {
         })?;
         // Validate eagerly so a malformed artifact fails at load rather than at
         // proof time, hours into a mission.
-        parsed.commitments()?;
+        parsed.validate()?;
         Ok(parsed)
+    }
+
+    /// Reject artifacts that parse but cannot describe a real mission.
+    ///
+    /// Checks the version and every commitment, plus the parameters whose zero
+    /// values would quietly void a guarantee rather than cause a visible failure:
+    ///
+    /// - `t_vdf_steps == 0` leaves nothing for the agent to compute, so the
+    ///   time-bound existence claim reduces to "the key is available now".
+    /// - `t_seconds == 0` gives a mission budget that is already spent.
+    /// - A malformed `correction_anchor` would otherwise surface only at the first
+    ///   A7 correction attempt.
+    ///
+    /// # Errors
+    /// Returns [`ChronosError::Snark`] describing the first problem found.
+    pub fn validate(&self) -> ChronosResult<()> {
+        self.commitments()?;
+        if self.mission_id.trim().is_empty() {
+            return Err(ChronosError::Snark(
+                "mission_id must not be empty: it is the preimage of mission_commit".into(),
+            ));
+        }
+        if self.t_vdf_steps == 0 {
+            return Err(ChronosError::Snark(
+                "t_vdf_steps must be greater than zero: a mission with no sequential work \
+                 imposes no time bound on key recovery"
+                    .into(),
+            ));
+        }
+        if self.t_seconds == 0 {
+            return Err(ChronosError::Snark(
+                "t_seconds must be greater than zero: the mission budget would be spent \
+                 before the agent starts"
+                    .into(),
+            ));
+        }
+        self.correction_anchor_bytes()?;
+        Ok(())
     }
 }
 
@@ -353,6 +391,69 @@ mod tests {
             default_autonomy_threshold(),
             "a missing threshold must fall back to the documented default"
         );
+    }
+
+    /// `t_vdf_steps == 0` parses fine as JSON but describes a mission with no
+    /// sequential work, so the key is recoverable immediately and the time-bound
+    /// claim is empty. `load` must refuse it rather than hand the agent an
+    /// artifact that voids the guarantee it exists to enforce.
+    #[test]
+    fn test_validate_rejects_a_mission_with_no_sequential_work() {
+        let mut m = sample();
+        m.t_vdf_steps = 0;
+        let err = m.validate().expect_err("zero steps must be refused");
+        assert!(
+            format!("{err}").contains("t_vdf_steps"),
+            "the error must name the offending field, got: {err}"
+        );
+
+        let mut ok = sample();
+        ok.t_vdf_steps = 1;
+        ok.validate().expect("one squaring is a valid, if weak, bound");
+    }
+
+    /// A zero wall-clock budget is spent before the agent starts.
+    #[test]
+    fn test_validate_rejects_zero_mission_budget() {
+        let mut m = sample();
+        m.t_seconds = 0;
+        assert!(m.validate().is_err(), "zero t_seconds must be refused");
+    }
+
+    /// `mission_id` is the preimage of `mission_commit`. An empty one cannot be
+    /// the mission the commitment was computed over.
+    #[test]
+    fn test_validate_rejects_empty_mission_id() {
+        let mut m = sample();
+        m.mission_id = "   ".into();
+        assert!(m.validate().is_err(), "blank mission_id must be refused");
+    }
+
+    /// Loading must apply the same checks as `validate`, not just parse. This is
+    /// the path the agent actually takes, so a test on `validate` alone would not
+    /// catch `load` forgetting to call it.
+    #[test]
+    fn test_load_rejects_an_artifact_that_validate_rejects() {
+        let dir = std::env::temp_dir().join(format!(
+            "chronos-mission-validate-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("mission_public.json");
+
+        let mut m = sample();
+        m.t_vdf_steps = 0;
+        m.save(&path).expect("write");
+        let err = MissionPublic::load(&path).expect_err("load must refuse");
+        assert!(
+            format!("{err}").contains("t_vdf_steps"),
+            "load must surface the validation failure, got: {err}"
+        );
+
+        sample().save(&path).expect("write");
+        MissionPublic::load(&path).expect("a well-formed artifact must load");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The threshold is part of the artifact the agent consumes, so it must

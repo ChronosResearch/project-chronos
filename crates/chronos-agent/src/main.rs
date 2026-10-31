@@ -49,9 +49,15 @@
 //! # Security posture of the HTTP surface
 //!
 //! Requests carry an HMAC over method, path, nonce and body digest. That
-//! authenticates the operator and prevents replay, but the transport is plain
-//! HTTP: an eavesdropper reads bodies, and mTLS is validated in config yet not
-//! wired to the acceptor. Do not expose this to an untrusted network.
+//! authenticates the operator, but the transport is plain HTTP: an eavesdropper
+//! reads bodies, and mTLS is validated in config yet not wired to the acceptor.
+//! Do not expose this to an untrusted network.
+//!
+//! Replay is bounded, not eliminated. The nonce cache refuses any nonce it still
+//! remembers, and it remembers each one for [`tls::DEFAULT_NONCE_WINDOW`] rather
+//! than until some request count pushes it out. Nothing in the MAC'd payload
+//! carries a timestamp, so a request captured and held beyond that window is
+//! replayable; see [`tls::NonceCache`].
 
 // The binary consumes the library rather than re-declaring the modules with
 // `mod`. Declaring them in both places compiles every module twice, once into
@@ -101,7 +107,25 @@ struct Attestation {
     proof: Vec<u8>,
     public_inputs: chronos_snark::circuit::PublicInputs,
     verifying_key: Vec<u8>,
+    /// Preimage of the `containment_commit` public input.
+    ///
+    /// Kept so `/attestation` can publish it. Without the preimage, a reader gets
+    /// a field element and no way to tell what it commits to: they cannot
+    /// recompute the commitment, and they cannot check the `autonomy_threshold`
+    /// inside it against the one in `mission_public.json`. The proof binds the
+    /// summary to the commitment, so publishing it reveals nothing the proof did
+    /// not already fix, and withholding it made the A6 and A7 guarantees
+    /// unauditable from the outside.
+    containment: chronos_snark::circuit::ContainmentSummary,
 }
+
+/// Largest request body the agent will buffer, in bytes.
+///
+/// This bound is reached *before* authentication, because the MAC covers the body
+/// and so the body must be read to check it. That makes this the only limit on
+/// what an unauthenticated caller can make the agent allocate, which is why it is
+/// 8 MiB and not the 256 MiB it used to be.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
@@ -121,7 +145,50 @@ struct AppState {
     identity_prover: Arc<Mutex<Option<IdentityProver>>>,
     identity_proof: Arc<Mutex<Option<Vec<u8>>>>,
     identity_root: Arc<Mutex<Option<Fr>>>,
-    verify_failures: Arc<Mutex<u32>>,
+    verify_failures: Arc<Mutex<VerifyGate>>,
+}
+
+/// Failure counter for `/verify`, with a cooldown.
+///
+/// Rate-limits proof submission without locking the endpoint out permanently.
+/// The counter previously only ever reset on a *successful* verification, so five
+/// malformed submissions disabled `/verify` for the remaining life of the
+/// process. Since the only way to clear it was to submit a valid proof, and
+/// submitting proofs was the thing now refused, an operator who fat-fingered a
+/// file five times lost the ability to verify the attestation at all.
+#[derive(Default)]
+struct VerifyGate {
+    failures: u32,
+    last_failure: Option<std::time::Instant>,
+}
+
+impl VerifyGate {
+    /// Failed submissions tolerated inside one cooldown period.
+    const MAX_FAILURES: u32 = 5;
+    /// Idle time after which the failure count is forgiven.
+    const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
+    /// Whether submissions are currently refused. Clears an expired lockout as a
+    /// side effect, which is why this takes `&mut self`.
+    fn is_locked_out(&mut self) -> bool {
+        if let Some(last) = self.last_failure {
+            if last.elapsed() >= Self::COOLDOWN {
+                self.failures = 0;
+                self.last_failure = None;
+            }
+        }
+        self.failures >= Self::MAX_FAILURES
+    }
+
+    fn record_failure(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        self.last_failure = Some(std::time::Instant::now());
+    }
+
+    fn record_success(&mut self) {
+        self.failures = 0;
+        self.last_failure = None;
+    }
 }
 
 #[tokio::main]
@@ -161,8 +228,12 @@ async fn main() -> Result<()> {
     );
 
     let cfg = ChronosConfig::load().context("configuration invalid")?;
-    verify_exclusivity_assumption()?;
+    // Order matters, and it used to be wrong. `verify_exclusivity_assumption`
+    // hard-fails when `RLIMIT_CORE != 0`, so running it first meant the process
+    // either exited or found the limit already zero, which made
+    // `disable_core_dumps` dead code in practice. Set the limit, then assert it.
     disable_core_dumps();
+    verify_exclusivity_assumption()?;
     tls::validate_tls_config(&cfg.tls).context("TLS configuration invalid")?;
 
     // ── Mission artifact ─────────────────────────────────────────────────────
@@ -229,7 +300,7 @@ async fn main() -> Result<()> {
         identity_prover: Arc::new(Mutex::new(None)),
         identity_proof: Arc::new(Mutex::new(None)),
         identity_root: Arc::new(Mutex::new(None)),
-        verify_failures: Arc::new(Mutex::new(0)),
+        verify_failures: Arc::new(Mutex::new(VerifyGate::default())),
     };
 
     state::spawn_watchdog(Arc::clone(&sm), mission.t_seconds);
@@ -377,7 +448,13 @@ async fn auth_middleware(
         .map(str::to_owned);
 
     let (parts, body) = req.into_parts();
-    let bytes = axum::body::to_bytes(body, 256 * 1024 * 1024)
+    // The body must be buffered before the MAC can cover it, which means this
+    // limit is the one bound on what an *unauthenticated* caller can make the
+    // agent allocate. It was 256 MiB, so any caller who could open a socket could
+    // demand a quarter-gigabyte per connection before authentication was even
+    // attempted. The largest legitimate payload on this API is an FHE ciphertext
+    // batch, comfortably inside 8 MiB.
+    let bytes = axum::body::to_bytes(body, MAX_REQUEST_BODY_BYTES)
         .await
         .map_err(|_| StatusCode::PAYLOAD_TOO_LARGE)?;
 
@@ -391,8 +468,9 @@ async fn auth_middleware(
         )?;
     }
 
-    // Replay check *after* authentication, so an unauthenticated caller cannot
-    // consume nonce-cache slots and evict legitimate entries.
+    // Replay check *after* authentication. The cache fails closed when it is
+    // full, so letting an unauthenticated caller consume slots would hand them a
+    // denial-of-service switch over the operator's own requests.
     if !app.nonce_cache.lock().await.check_and_insert(&nonce) {
         warn!(target: "chronos", %path, "request rejected: replayed nonce");
         return Err(StatusCode::UNAUTHORIZED);
@@ -523,13 +601,24 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
 
     // ── 5. Open the sealed key into locked memory ────────────────────────────
     let k_enc = ChronosAead::derive_key(&y_bytes, &salt);
-    let opened = ChronosAead::decrypt(&k_enc, &ct)
+    let mut opened = ChronosAead::decrypt(&k_enc, &ct)
         .context("sealed key failed to open, wrong VDF output, wrong salt, or tampered ct_sk")?;
-    let sk_bytes = poseidon::join32(&[opened[0], opened[1]])
+    let mut sk_bytes = poseidon::join32(&[opened[0], opened[1]])
         .context("opened plaintext is not a 32-byte key")?;
 
-    // From here the key exists only inside `LockedBytes`: mlock'd against swap and
-    // triple-pass wiped on drop. No plain `Vec<u8>` copy is made.
+    // `opened` holds the key as field elements. It is an ordinary heap `Vec`, not
+    // locked and not wiped on drop, so overwrite it as soon as the bytes are out.
+    // An earlier comment here claimed the key existed "only inside `LockedBytes`"
+    // and that "no plain Vec copy is made", which was wrong in two places: this
+    // vector, and the `sk_bytes` stack array below.
+    for limb in &mut opened {
+        unsafe { core::ptr::write_volatile(limb, Fr::from(0u64)) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    drop(opened);
+
+    // `LockedBytes` takes ownership of this vector and mlocks it in place, so this
+    // is the only long-lived copy: locked against swap, triple-pass wiped on drop.
     let sk_locked = LockedBytes::new(sk_bytes.to_vec()).context("cannot mlock the secret key")?;
 
     // ── 6. Check it against the provisioner's commitment ─────────────────────
@@ -620,6 +709,14 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
         containment: summary,
     };
 
+    // The witness needs its own copy of the key, and `ErasureWitness` zeroizes it
+    // on drop. This stack array is a second copy with no such treatment, and it
+    // outlives the witness because the witness moves into the blocking task.
+    // Overwrite it now; `sk_locked` is still the live key until it is dropped
+    // below.
+    unsafe { core::ptr::write_volatile(&mut sk_bytes, [0u8; SK_BYTES]) };
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+
     let pk_path = cfg.paths.proving_key.clone();
     let public_inputs = mission
         .to_public_inputs(summary.commitment())
@@ -644,6 +741,7 @@ async fn run_mission_inner(app: &AppState) -> Result<()> {
         proof,
         public_inputs,
         verifying_key,
+        containment: summary,
     });
 
     // Explicit drop so the wipe is visibly part of the protocol rather than an
@@ -872,48 +970,75 @@ async fn human_correction_handler(State(app): State<AppState>, body: Bytes) -> R
 }
 
 /// Verify a submitted erasure proof against this mission's public inputs.
+///
+/// Two things here are deliberate and were both previously wrong.
+///
+/// The attestation mutex is released before the proving key is loaded. Loading
+/// deserialises a multi-megabyte key from disk and verification runs pairings;
+/// holding the mutex across that blocked `/attestation`, `/status` and mission
+/// completion for the duration, on an attacker-triggerable path.
+///
+/// The blocking work runs on the blocking pool. Running it inline parks a Tokio
+/// worker thread, so a handful of concurrent `/verify` calls could starve every
+/// other endpoint including the watchdog's view of the state machine.
 async fn verify_handler(State(app): State<AppState>, body: Bytes) -> Response {
-    const MAX_FAILURES: u32 = 5;
-
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Json("empty proof")).into_response();
     }
-    if *app.verify_failures.lock().await >= MAX_FAILURES {
+    if app.verify_failures.lock().await.is_locked_out() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json("verify locked after repeated failures"),
+            Json("verify locked after repeated failures, retry after the cooldown"),
         )
             .into_response();
     }
 
-    let guard = app.attestation.lock().await;
-    let Some(att) = guard.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json("no attestation yet, mission has not completed"),
-        )
-            .into_response();
-    };
-
-    let prover = match Groth16Prover::load(&app.cfg.paths.proving_key) {
-        Ok(p) => p,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+    // Copy the public inputs out and release the lock. `PublicInputs` is `Copy`,
+    // five field elements, so this costs nothing worth holding a mutex for.
+    let public_inputs = {
+        let guard = app.attestation.lock().await;
+        match guard.as_ref() {
+            Some(att) => att.public_inputs,
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json("no attestation yet, mission has not completed"),
+                )
+                    .into_response()
+            }
         }
     };
 
-    match prover.verify_erasure(&body, &att.public_inputs) {
-        Ok(true) => {
-            *app.verify_failures.lock().await = 0;
+    let key_path = app.cfg.paths.proving_key.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let prover = Groth16Prover::load(&key_path)?;
+        prover.verify_erasure(&body, &public_inputs)
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(true)) => {
+            app.verify_failures.lock().await.record_success();
             (StatusCode::OK, Json("proof verified")).into_response()
         }
-        Ok(false) => {
-            *app.verify_failures.lock().await += 1;
+        Ok(Ok(false)) => {
+            app.verify_failures.lock().await.record_failure();
             (StatusCode::UNPROCESSABLE_ENTITY, Json("proof invalid")).into_response()
         }
-        Err(e) => {
-            *app.verify_failures.lock().await += 1;
+        Ok(Err(e)) => {
+            app.verify_failures.lock().await.record_failure();
             (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+        }
+        Err(e) => {
+            // Join error: the blocking task panicked. Not a submission failure, so
+            // it does not count against the caller.
+            error!(target: "chronos", error = %e, "proof verification task failed");
+            metrics::error_count().inc();
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json("verification task failed"),
+            )
+                .into_response()
         }
     }
 }
@@ -930,9 +1055,61 @@ struct AttestationResponse {
     /// EVM calldata for `ChronosRegistry.attestErasure`.
     evm_proof: String,
     evm_public_inputs: Vec<String>,
+    /// Preimage of the `containment_commit` public input, so the commitment can
+    /// be recomputed and its contents checked against `mission_public.json`.
+    containment_summary: ContainmentSummaryView,
     /// Restated on every response, because this is where a reader is most likely
     /// to over-interpret an accepted proof.
     trust_note: String,
+}
+
+/// Published form of [`chronos_snark::circuit::ContainmentSummary`].
+///
+/// Field order matches `ContainmentSummary::to_elements`, which is the order
+/// `containment_commit` is computed over. A verifier reconstructs the summary from
+/// this, recomputes the Poseidon commitment, and checks it equals the
+/// `containment_commit` public input the proof was verified against.
+#[derive(Serialize)]
+struct ContainmentSummaryView {
+    final_phase: u64,
+    final_granted: u64,
+    op_budget_remaining: u64,
+    disclosure_remaining: u64,
+    admitted: u64,
+    denied: u64,
+    ledger_len: u64,
+    /// Low 16 bytes of the ledger's SHA-256 chain head, as a field element.
+    chain_head_lo: String,
+    /// High 16 bytes of the ledger's SHA-256 chain head, as a field element.
+    chain_head_hi: String,
+    uncertainty_incurred: u64,
+    uncertainty_resolved: u64,
+    peak_uncertainty: u64,
+    /// Must equal `autonomy_threshold` in `mission_public.json`. If it does not,
+    /// the agent ran against a threshold the provisioner did not set.
+    autonomy_threshold: u64,
+    corrections_consumed: u64,
+}
+
+impl From<&chronos_snark::circuit::ContainmentSummary> for ContainmentSummaryView {
+    fn from(s: &chronos_snark::circuit::ContainmentSummary) -> Self {
+        Self {
+            final_phase: s.final_phase,
+            final_granted: s.final_granted,
+            op_budget_remaining: s.op_budget_remaining,
+            disclosure_remaining: s.disclosure_remaining,
+            admitted: s.admitted,
+            denied: s.denied,
+            ledger_len: s.ledger_len,
+            chain_head_lo: fr_to_hex(s.chain_head_lo),
+            chain_head_hi: fr_to_hex(s.chain_head_hi),
+            uncertainty_incurred: s.uncertainty_incurred,
+            uncertainty_resolved: s.uncertainty_resolved,
+            peak_uncertainty: s.peak_uncertainty,
+            autonomy_threshold: s.autonomy_threshold,
+            corrections_consumed: s.corrections_consumed,
+        }
+    }
 }
 
 /// Serve the completed erasure attestation.
@@ -966,6 +1143,7 @@ async fn attestation_handler(State(app): State<AppState>) -> Response {
             verifying_key: hex::encode(&att.verifying_key),
             evm_proof,
             evm_public_inputs: evm_inputs,
+            containment_summary: (&att.containment).into(),
             trust_note:
                 "An accepted proof shows the prover knew the key that opens the committed \
                  ciphertext under a key derived from the committed VDF output, and that the \

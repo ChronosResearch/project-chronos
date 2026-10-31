@@ -181,9 +181,31 @@ impl StateMachine {
 
     /// Force `Erased` from any state, wiping identity material.
     ///
-    /// Always succeeds, [`Event::Erase`] is unconditionally admissible, which is
-    /// what makes containment axiom A5 (erasure liveness) hold.
+    /// Idempotent. [`Event::Erase`] is unconditionally admissible, which is what
+    /// makes containment axiom A5 (erasure liveness) hold, but *admitting it
+    /// twice appends two ledger records*, and that was a real bug rather than a
+    /// cosmetic one.
+    ///
+    /// The protocol loop erases once to make the summary terminal before proving,
+    /// and its caller erased again on both the success and the failure path. The
+    /// second `Erase` advanced the SHA-256 chain head and incremented `admitted`
+    /// *after* the summary had been snapshotted and folded into
+    /// `containment_commit`. So a completed mission published an attestation whose
+    /// chain head and counts disagreed permanently with what `/status` reported,
+    /// and a verifier cross-checking the two saw a mismatch indistinguishable from
+    /// tampering.
+    ///
+    /// Erasing is still unconditional; what is suppressed is the duplicate ledger
+    /// entry once the monitor has already reached its terminal state.
     pub async fn force_erased(&self) {
+        if self.ledger.lock().await.state().phase == Phase::Erased {
+            // Already terminal. Re-run the local wipe and wake waiters, because
+            // callers rely on both being idempotent, but do not touch the ledger.
+            self.identity.lock().await.wipe();
+            self.erased_notify.notify_waiters();
+            return;
+        }
+
         let decision = self.admit(Event::Erase).await;
         debug_assert!(
             decision.is_admitted(),
@@ -428,6 +450,56 @@ mod tests {
             "error should come from the containment monitor, got: {err}"
         );
         assert_eq!(s.current().await, AgentState::Active, "state must not change");
+    }
+
+    /// Erasing twice must not append a second ledger record.
+    ///
+    /// This pins a real bug rather than a style preference. The protocol loop
+    /// erases to make the summary terminal before proving, and its caller erased
+    /// again on both the success and the failure path. Because `Event::Erase` is
+    /// unconditionally admissible, the second one was admitted: it advanced the
+    /// chain head and incremented `admitted` *after* the summary had already been
+    /// folded into `containment_commit`. The published attestation therefore
+    /// disagreed permanently with what the live agent reported at `/status`, and a
+    /// verifier comparing the two could not tell that apart from tampering.
+    #[tokio::test]
+    async fn test_force_erased_is_idempotent() {
+        let s = sm();
+        s.arm_to_active().await.expect("init");
+        s.active_to_locked().await.expect("lock");
+
+        s.force_erased().await;
+        let len_once = s.ledger_len().await;
+        let head_once = s.chain_head_hex().await;
+        let (admitted_once, denied_once) = s.counters().await;
+        let summary_once = s.containment_summary().await;
+
+        // Whatever the caller does, erasing again must be observationally inert.
+        s.force_erased().await;
+        s.force_erased().await;
+
+        assert_eq!(
+            s.ledger_len().await,
+            len_once,
+            "a repeated erase must not append a ledger record"
+        );
+        assert_eq!(
+            s.chain_head_hex().await,
+            head_once,
+            "a repeated erase must not advance the chain head, or the published \
+             attestation stops matching the live ledger"
+        );
+        assert_eq!(
+            s.counters().await,
+            (admitted_once, denied_once),
+            "a repeated erase must not be counted"
+        );
+        assert_eq!(
+            s.containment_summary().await,
+            summary_once,
+            "the summary the proof commits to must be stable once terminal"
+        );
+        assert_eq!(s.current().await, AgentState::Erased);
     }
 
     /// Every transition must appear in the ledger, because the erasure proof

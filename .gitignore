@@ -235,3 +235,17 @@ operator.key
 # Written by run-benchmarks.bat / scripts\collect_benchmarks.ps1. Timestamped
 # result sets are local evidence for the paper, not repository content.
 /benchmark-results/
+# Note the singular spelling too: an earlier run wrote here instead, and the
+# plural pattern above does not match it.
+/benchmark_result/
+
+# ── Unrelated local work, kept out of this repository ────────────────────────
+# Scratch files from other projects that happen to share this working directory.
+# None of it is part of CHRONOS, and a reader cloning the repo should not have to
+# wonder why an ephemeral-agent project ships digit images and a windmill.
+/assets/
+/feedback/
+/digit_*.jpg
+/input_image.png
+/find_boxes.py
+/projects_summary.html
