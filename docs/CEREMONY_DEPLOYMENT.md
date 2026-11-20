@@ -381,8 +381,6 @@ Questions during ceremony deployment? Contact:
 
 ---
 
-## Copyright
+## License
 
-This deployment guide is part of CHRONOS. Copyright (c) 2026 Shashank Kumar
-(Chronos Research), all rights reserved. No licence is granted; see
-`COPYRIGHT.md` in the repository root.
+This deployment guide is part of CHRONOS and licensed under AGPL-3.0. See `LICENSE` in the repository root.

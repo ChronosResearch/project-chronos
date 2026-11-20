@@ -1,18 +1,12 @@
 # Third-Party Notices
 
-CHRONOS itself is proprietary, all rights reserved; see `COPYRIGHT.md`. This file
-records the third-party code and data it relies on, and the licences under which
-they are used.
+CHRONOS is licensed under AGPL-3.0. This file records third-party code and data it
+relies on, and the licences under which they are used.
 
-Every permissive licence listed here (MIT, Apache-2.0, BSD-3-Clause-Clear, ISC)
-permits use in a proprietary work, provided copyright notices and licence text
-are preserved. That obligation survives this project being closed-source, and
-preserving those notices is the purpose of this file.
-
-MPL-2.0 is file-level copyleft: it does not reach this project's own sources, but
-modifications to an MPL-2.0 file must be published under MPL-2.0. Nothing here is
-modified, every dependency is consumed unchanged through Cargo, so the obligation
-is attribution only.
+All permissive licences listed here (MIT, Apache-2.0, BSD-3-Clause-Clear, ISC,
+MPL-2.0) are one-way compatible with AGPL-3.0: their terms permit inclusion in a
+copyleft work, provided copyright notices and licence text are preserved. That is
+the purpose of this file.
 
 **Nothing in `crates/` is vendored third-party source.** Every dependency is
 consumed through Cargo, so `Cargo.lock` records exact versions and provenance, and

@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
-// Copyright (c) 2026 Shashank Kumar (Chronos Research). All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.20;
 
 import {Groth16Verifier} from "./Groth16Verifier.sol";

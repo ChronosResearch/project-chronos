@@ -481,6 +481,6 @@ The gap is no longer "we hope the agent is interruptible." The gap is "here is a
 
 ---
 
-**Rights:** Copyright (c) 2026 Shashank Kumar (Chronos Research). All rights reserved, see `COPYRIGHT.md`  
+**License:** Apache-2.0  
 **Status:** Prototype, not audited, not production-ready  
 **Contribution:** A cryptographically enforced interruptibility mechanism, a scoped building block for AI corrigibility research, with explicit assumptions about uncertainty estimation honesty.

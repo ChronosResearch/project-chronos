@@ -339,8 +339,6 @@ Questions or issues? Open an issue on the CHRONOS GitHub repository or contact t
 
 ---
 
-## Copyright
+## License
 
-This ceremony tooling is part of CHRONOS. Copyright (c) 2026 Shashank Kumar
-(Chronos Research), all rights reserved. No licence is granted; see
-`COPYRIGHT.md` in the repository root.
+This ceremony tooling is part of CHRONOS and licensed under AGPL-3.0. See `LICENSE` in the repository root.

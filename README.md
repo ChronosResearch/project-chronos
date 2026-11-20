@@ -9,7 +9,7 @@ No trusted hardware. No trusted operator. The guarantee is arithmetic.
 > [!IMPORTANT]
 > **Research prototype.** Not audited, not deployed, not production-ready. Three assumptions are load-bearing and stated plainly below: the trusted setup has not yet been run as a live ceremony, no argument in a circuit can prove that memory was freed, and the uncertainty figure the agent reports about itself is not verified. Read [What it does not establish](#what-it-does-not-establish) before drawing conclusions.
 
-**Paper:** [CHRONOS v4](https://zenodo.org/records/21534311) · **Language:** Rust · **Curves:** BN254 (Groth16), BLS12-381 (drand) · **Rights:** All rights reserved
+**Paper:** [CHRONOS v4](https://zenodo.org/records/21534311) · **Language:** Rust · **Curves:** BN254 (Groth16), BLS12-381 (drand) · **License:** Apache-2.0
 
 ---
 
@@ -417,15 +417,6 @@ cargo build --release --target=x86_64-unknown-linux-musl -p chronos-agent
 | [CONTRIBUTING.md](CONTRIBUTING.md) | development setup and PR standards |
 | [contracts/README.md](contracts/README.md) | on-chain verification |
 
-## Copyright
+## License
 
-Copyright (c) 2026 Shashank Kumar (Chronos Research). All rights reserved.
-
-This is not open-source software. No licence to use, copy, modify or distribute
-this work is granted. See [COPYRIGHT.md](COPYRIGHT.md) for the full terms, and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the third-party components
-this work depends on, whose own licences are unaffected.
-
-Earlier versions of this repository were published under Apache-2.0. Copies
-obtained under that licence remain governed by it; the terms above apply to this
-and later versions.
+Apache-2.0, see [LICENSE](LICENSE).
